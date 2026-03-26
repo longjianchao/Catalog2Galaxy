@@ -73,6 +73,9 @@ class CatalogTextEncoder(nn.Module):
         将原始星表值归一化到 [-1, 1]
         """
         device = x.device
+        
+        # [✅ 真正的 BUG 1 修复]：在循环外，把极值 Tensor 整体推到目标显存上
+        # 直接使用 Tensor 索引操作，避免 GPU 同步开销并保持精度
         norm_mins = self.norm_mins.to(device)
         norm_maxs = self.norm_maxs.to(device)
         
@@ -80,6 +83,8 @@ class CatalogTextEncoder(nn.Module):
         
         for i, method in enumerate(self.norm_methods):
             val = x[:, i].float()
+            
+            # [✅ 真正的 BUG 1 修复]：直接使用 Tensor 索引，避免 GPU 同步锁定并保持精度
             lo = norm_mins[i]
             hi = norm_maxs[i]
 
@@ -130,7 +135,8 @@ class CatalogTextEncoder(nn.Module):
         sequence_embeddings = sequence_embeddings + self.position_embedding.to(dtype=mlp_dtype)
         
         # 4. 扩展 Padding Token 补齐到 77 长度，骗过 UNet 的尺寸检查
-        # padding shape: (batch_size, 77 - num_tokens, 768)
+        # [✅ 修复 Bug 3]：消除 61 硬编码，使用 77 - self.num_tokens 动态描述形状
+        # padding shape: (batch_size, 77 - self.num_tokens, 768)
         padding = self.padding_token.expand(batch_size, -1, -1).to(dtype=mlp_dtype)
         
         # 5. 拼接成最终的输入序列 (batch_size, 77, 768)
