@@ -17,7 +17,15 @@ class TEUnetWrapper(nn.Module):
         if hasattr(self.TE, 'input_feeder'):
             for feeder in self.TE.input_feeder:
                 feeder(input_all)
-        encoder_hidden_states = self.TE(prompt_ids, position_ids=position_ids, attention_mask=attn_mask, output_hidden_states=True)[0]  # Get the text embedding for conditioning
+        
+        # 检查是否使用星表特征编码器
+        from hcpdiff.models.textencoder_catalog import CatalogTextEncoder
+        if isinstance(self.TE, CatalogTextEncoder):
+            # 直接使用prompt_ids作为特征向量
+            encoder_hidden_states = self.TE(prompt_ids, position_ids=position_ids, attention_mask=attn_mask, output_hidden_states=True)[0]  # Get the text embedding for conditioning
+        else:
+            # 正常处理文本输入
+            encoder_hidden_states = self.TE(prompt_ids, position_ids=position_ids, attention_mask=attn_mask, output_hidden_states=True)[0]  # Get the text embedding for conditioning
 
         if attn_mask is not None:
             encoder_hidden_states, attn_mask = pad_attn_bias(encoder_hidden_states, attn_mask)
@@ -43,7 +51,10 @@ class TEUnetWrapper(nn.Module):
 
         self.unet.enable_gradient_checkpointing()
         if self.train_TE:
-            self.TE.gradient_checkpointing_enable()
+            # 检查是否使用星表特征编码器
+            from hcpdiff.models.textencoder_catalog import CatalogTextEncoder
+            if not isinstance(self.TE, CatalogTextEncoder) and hasattr(self.TE, 'gradient_checkpointing_enable'):
+                self.TE.gradient_checkpointing_enable()
             self.apply(grad_ckpt_enable)
         else:
             self.unet.apply(grad_ckpt_enable)

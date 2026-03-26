@@ -3,8 +3,9 @@
 # The customized config file is cfgs/train/galaxy/fine-tuning_sdss.yaml.
 
 # set CUDA and Hugging Face
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 export HF_ENDPOINT=https://hf-mirror.com
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 
 echo "Currently activated Conda environment: "
 conda info --envs | grep '*'

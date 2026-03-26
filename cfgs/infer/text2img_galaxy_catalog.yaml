@@ -1,0 +1,52 @@
+_base_: [cfgs/infer/text2img.yaml]
+
+pretrained_model: "runwayml/stable-diffusion-v1-5"
+N_repeats: 1
+
+bs: 1
+num: 1
+output_dir: 'output/'
+
+clip_skip: 0
+
+infer_args:
+  width: 192
+  height: 192
+  guidance_scale: 1.001
+  num_inference_steps: 50
+
+new_components:
+  scheduler:
+    _target_: diffusers.EulerAncestralDiscreteScheduler
+    beta_start: 0.00085
+    beta_end: 0.012
+    beta_schedule: 'scaled_linear'
+  text_encoder:
+    _target_: hcpdiff.models.textencoder_catalog.CatalogTextEncoder
+    feature_dim: 22
+    hidden_dim: 1024
+    output_dim: 768
+    norm_stats_path: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/normalization_stats_v3.csv"
+
+merge:
+  alpha: 1
+
+  group1:
+    type: 'unet'
+    base_model_alpha: 0
+    part:
+      - path: 'exps/2026-03-25-16-05-44/ckpts/unet-40000.safetensors'
+        alpha: ${....alpha}
+        layers: 'all'
+  group2:
+    type: 'TE'
+    base_model_alpha: 0
+    part:
+      - path: 'exps/2026-03-25-16-05-44/ckpts/text_encoder-40000.safetensors'
+        alpha: ${....alpha}
+        layers: 'all'
+
+interface:
+  - _target_: hcpdiff.vis.DiskInterface
+    show_steps: 0
+    save_root: '${output_dir}'

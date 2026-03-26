@@ -59,29 +59,49 @@ class TextImagePairDataset(Dataset):
 
     @torch.no_grad()
     def cache_latents(self, vae, weight_dtype, device, show_prog=True):
-        if self.cache_path and os.path.exists(self.cache_path):
-            
-            self.latents = torch.load(self.cache_path)
-
-            # Print all keys in the latents
-            all_keys = list(self.latents.keys())
-            
+        if not self.cache_path:
             return
+
+        # 1. 核心改进：确保 cache_path 是一个目录
+        if not os.path.exists(self.cache_path):
+            os.makedirs(self.cache_path, exist_ok=True)
+        
+        # 如果它是个文件（之前那个1.56GB的旧文件），提示用户手动删除
+        if os.path.isfile(self.cache_path):
+            raise IOError(f"检测到缓存路径 {self.cache_path} 是一个文件。请先手动删除该文件，本程序将创建同名目录。")
 
         self.latents = {}
         self.bucket.rest(0)
 
+        print(f"正在同步/生成 Latents 缓存至目录: {self.cache_path}")
+        
         for (path, data_source), size in tqdm(self.bucket, disable=not show_prog):
             img_name = data_source.get_image_name(path)
-            if img_name not in self.latents:
-                data = self.load_data(path, data_source, size)
-                image = data['img'].unsqueeze(0).to(device, dtype=weight_dtype)
-                latents = vae.encode(image).latent_dist.sample().squeeze(0)
-                data['img'] = (latents*vae.config.scaling_factor).cpu()
-                self.latents[img_name] = data
+            # 每个星系拥有独立的缓存文件，例如：12345.pt
+            latent_file = os.path.join(self.cache_path, img_name + ".pt")
 
-        if self.cache_path:
-            torch.save(self.latents, self.cache_path)
+            # 2. 检查该星系是否已经缓存过
+            if os.path.exists(latent_file):
+                try:
+                    # 如果已存在，直接从独立文件加载
+                    self.latents[img_name] = torch.load(latent_file, map_location='cpu')
+                    continue
+                except Exception:
+                    print(f"警告：缓存文件 {latent_file} 损坏，将重新生成。")
+
+            # 3. 如果没缓存，则调用 VAE 编码
+            data = self.load_data(path, data_source, size)
+            image = data['img'].unsqueeze(0).to(device, dtype=weight_dtype)
+            
+            # VAE 编码过程
+            latents = vae.encode(image).latent_dist.sample().squeeze(0)
+            data['img'] = (latents * vae.config.scaling_factor).cpu()
+            
+            # 4. 存入内存字典，并同步保存到独立文件
+            self.latents[img_name] = data
+            torch.save(data, latent_file)
+
+        print(f"✅ 成功加载/缓存了 {len(self.latents)} 个星系特征。")
 
     def __len__(self):
         return len(self.bucket)

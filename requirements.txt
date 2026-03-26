@@ -10,12 +10,11 @@ matplotlib
 numpy
 omegaconf
 opencv_python
-Pillow>=9,<10
+Pillow
 pyarrow
 PyYAML
 scikit_learn
 tqdm
 transformers>=4.25.1
-xformers
 pytorch_lightning
 easydict

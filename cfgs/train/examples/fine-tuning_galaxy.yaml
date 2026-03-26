@@ -14,7 +14,7 @@ train:
     scheduler_kwargs: {} # args for scheduler
 
 model:
-  pretrained_model_name_or_path: "./.cache/modelscope/hub/ai-modelscope/stable-diffusion-v1-5/" # pretrained model path
+  pretrained_model_name_or_path: "runwayml/stable-diffusion-v1-5" # pretrained model path
   tokenizer_repeats: 1
   ema_unet: 1
   ema_text_encoder: 1
@@ -39,8 +39,8 @@ text_encoder:
 
 data_cfg:
   batch_size: 16
-  img_root: "../galaxyzoo/gz2/images_well-sampled_balanced_shuffled+dustlane"  # dataset img path
-  caption_file: "../galaxyzoo/gz2/tags_well-sampled_balanced_shuffled+dustlane" # anotation or cpation path
+  img_root: "cfgs/train/data/images_well-sampled_balanced_shuffled"  # dataset img path
+  caption_file: "cfgs/train/data/tags_well-sampled_balanced_shuffled" # anotation or cpation path
   target_area: 424*424 # expected resolution
 
 # The dataset configuration inherits base_dataset.yaml

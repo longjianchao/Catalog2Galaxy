@@ -288,14 +288,23 @@ class Trainer:
                 self.ex_words_emb[name].data = load_emb(ckpt)
 
     def make_hooks(self):
-        # Hook tokenizer and embedding to support pt
-        self.embedding_hook, self.ex_words_emb = ComposeEmbPTHook.hook_from_dir(
-            self.cfgs.tokenizer_pt.emb_dir, self.tokenizer, self.TE_unet.TE, log=self.is_local_main_process,
-            N_repeats=self.cfgs.model.tokenizer_repeats, device=self.device)
+        # 检查是否使用星表特征编码器
+        from hcpdiff.models.textencoder_catalog import CatalogTextEncoder
+        if isinstance(self.TE_unet.TE, CatalogTextEncoder):
+            # 跳过EmbeddingPTHook的创建，因为我们不需要使用文本嵌入
+            self.embedding_hook = None
+            self.ex_words_emb = {}
+            # 跳过ComposeTEEXHook的创建，因为我们直接使用特征向量
+            self.text_enc_hook = None
+        else:
+            # 正常创建hooks
+            self.embedding_hook, self.ex_words_emb = ComposeEmbPTHook.hook_from_dir(
+                self.cfgs.tokenizer_pt.emb_dir, self.tokenizer, self.TE_unet.TE, log=self.is_local_main_process,
+                N_repeats=self.cfgs.model.tokenizer_repeats, device=self.device)
 
-        self.text_enc_hook = ComposeTEEXHook.hook(self.TE_unet.TE, self.tokenizer, N_repeats=self.cfgs.model.tokenizer_repeats,
-                                                  device=self.device, clip_skip=self.cfgs.model.clip_skip,
-                                                  clip_final_norm=self.cfgs.model.clip_final_norm)
+            self.text_enc_hook = ComposeTEEXHook.hook(self.TE_unet.TE, self.tokenizer, N_repeats=self.cfgs.model.tokenizer_repeats,
+                                                      device=self.device, clip_skip=self.cfgs.model.clip_skip,
+                                                      clip_final_norm=self.cfgs.model.clip_final_norm)
 
     def build_dataset(self, data_builder: partial):
         batch_size = data_builder.keywords.pop('batch_size')
@@ -510,7 +519,7 @@ class Trainer:
             loss = (self.criterion(model_pred.float(), target.float(), timesteps)*att_mask).mean()
         else:
             loss = (self.criterion(model_pred.float(), target.float())*att_mask).mean()
-        if len(self.embedding_hook.emb_train)>0:
+        if self.embedding_hook is not None and len(self.embedding_hook.emb_train) > 0:
             loss = loss+0*sum([emb.mean() for emb in self.embedding_hook.emb_train])
         return loss
 

@@ -35,36 +35,35 @@ prompt_dict = {
     "sdss, smooth, completely round galaxy",
     "spiral_2_arm":
     "sdss, spiral galaxy, obvious bulge prominence, tightly wound spiral arms, 2 spiral arms",
-    # "edge_on":
-    # "sdss, edge-on galaxy, with rounded edge-on bulge",
-    # "merger_in-between": 
-    # "sdss, smooth, in-between round galaxy, a merger",
-    # "merger_spiral": 
-    # "sdss, spiral galaxy, just noticeable bulge prominence, tightly wound spiral arms, 2 spiral arms, a merger",
-    # "dust_lane":
-    # "sdss, elliptical galaxy, dust lane",
-    # "ring":
-    # "sdss, ring galaxy"
+    "edge_on":
+    "sdss, edge-on galaxy, with rounded edge-on bulge",
+    "merger_in-between": 
+    "sdss, smooth, in-between round galaxy, a merger",
+    "merger_spiral": 
+    "sdss, spiral galaxy, just noticeable bulge prominence, tightly wound spiral arms, 2 spiral arms, a merger",
+    "dust_lane":
+    "sdss, elliptical galaxy, dust lane",
+    "ring":
+    "sdss, ring galaxy",
+    "candels_smooth":
+    "candels, smooth, completely round",
+    "candels_merger":
+    "candels, smooth, in-between round, merging galaxies",
+    "candels_spiral":
+    "candels, features or disk-shaped, spiral arms pattern, tightly wound spiral arms, obvious bulge prominence",
+    "candels_clump":
+    "candels, features or disk-shaped, mostly clumpy appearance, there are five or more clumps, the clumps appear in cluster or irregular, no single brightest clump, clumps are not symmetrical, clumps are embedded",
 
-    # "candels_smooth":
-    # "candels, smooth, completely round",
-    # "candels_merger":
-    # "candels, smooth, in-between round, merging galaxies",
-    # "candels_spiral":
-    # "candels, features or disk-shaped, spiral arms pattern, tightly wound spiral arms, obvious bulge prominence",
-    # "candels_clump":
-    # "candels, features or disk-shaped, mostly clumpy appearance, there are five or more clumps, the clumps appear in cluster or irregular, no single brightest clump, clumps are not symmetrical, clumps are embedded"
-
-    # "hubble_smooth":
-    # 'hubble, smooth, completely round',
-    # "hubble_inbetween":
-    # 'smooth, in-between round',
-    # "hubble_spiral":
-    # 'features or disk-shaped, spiral arms pattern, obvious bulge prominence, medium wound spiral arms, 2 spiral arms',
-    # "hubble_clump1":
-    # 'features or disk-shaped, something odd, a merger, mostly clumpy appearance, one clump is brightest, brightest clump is at center, the clumps appear in spiral shape, clumps are not symmetrical, clumps are not embedded',
-    # "hubble_clump2":
-    # 'features or disk-shaped, something odd, a merger, mostly clumpy appearance, no single brightest clump, there are 2 clumps, clumps are not symmetrical, clumps are embedded'
+    "hubble_smooth":
+    'hubble, smooth, completely round',
+    "hubble_inbetween":
+    'smooth, in-between round',
+    "hubble_spiral":
+    'features or disk-shaped, spiral arms pattern, obvious bulge prominence, medium wound spiral arms, 2 spiral arms',
+    "hubble_clump1":
+    'features or disk-shaped, something odd, a merger, mostly clumpy appearance, one clump is brightest, brightest clump is at center, the clumps appear in spiral shape, clumps are not symmetrical, clumps are not embedded',
+    "hubble_clump2":
+    'features or disk-shaped, something odd, a merger, mostly clumpy appearance, no single brightest clump, there are 2 clumps, clumps are not symmetrical, clumps are embedded'
 
     # Corresponds to the prompt in infer_script_full.sh
 }
@@ -73,15 +72,18 @@ prompt_dict = {
 num_images_per_prompt = 4 # adjust this to the number of images you want to display per prompt
 num_prompts = len(prompt_dict.keys()) 
 
+# Get only the prompt names that actually have directories
+actual_prompt_names = [d for d in os.listdir(output_dir) if os.path.isdir(os.path.join(output_dir, d))]
+num_prompts = len(actual_prompt_names)
+
 # Create a figure to store all sub-charts
 fig, axes = plt.subplots(num_prompts,
                          num_images_per_prompt + 1,
                          figsize=(10, 2 * num_prompts))
 
-for i, k in enumerate(prompt_dict):
-
-    prompt_name = k
-    prompt_text = prompt_dict[k]
+for i, prompt_name in enumerate(actual_prompt_names):
+    # Get prompt text from prompt_dict if available, otherwise use prompt_name
+    prompt_text = prompt_dict.get(prompt_name, prompt_name)
 
     images_path = f'{output_dir}/{prompt_name}'
 
@@ -97,7 +99,7 @@ for i, k in enumerate(prompt_dict):
         axes[i, j].imshow(img)
         axes[i, j].axis('off')
 
-    axes[i, 4].text(0.5,
+    axes[i, num_images_per_prompt].text(0.5,
                     0.3,
                     textwrap.fill(prompt_text.replace(',', ', '),
                                   width=20,
@@ -106,9 +108,10 @@ for i, k in enumerate(prompt_dict):
                     fontsize=10,
                     ha='center',
                     wrap=True)
-    axes[i, 4].axis('off')
+    axes[i, num_images_per_prompt].axis('off')
 
-    shutil.rmtree(images_path, ignore_errors=True)
+    # Comment out the line below if you want to keep the original images
+    # shutil.rmtree(images_path, ignore_errors=True)
 
 # find a unique name
 output_name_tmp = 'summary_{model_steps}_{ii}.png'

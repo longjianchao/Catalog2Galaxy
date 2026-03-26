@@ -7,7 +7,7 @@ from accelerate import Accelerator
 from loguru import logger
 
 from hcpdiff.train_ac import Trainer, RatioBucket, load_config_with_cli, set_seed, get_sampler
-
+torch.autograd.set_detect_anomaly(True)
 class TrainerSingleCard(Trainer):
     def init_context(self, cfgs_raw):
         self.accelerator = Accelerator(
@@ -23,10 +23,16 @@ class TrainerSingleCard(Trainer):
 
     @property
     def unet_raw(self):
+        # 如果 self.TE_unet 有 module 属性，说明是多卡 DDP 包装过的，取 .module.unet
+        if hasattr(self.TE_unet, 'module'):
+            return self.TE_unet.module.unet if self.train_TE else self.TE_unet.unet.module
+        # 否则说明是单卡，维持原样
         return self.TE_unet.unet
 
     @property
     def TE_raw(self):
+        if hasattr(self.TE_unet, 'module'):
+            return self.TE_unet.module.TE if self.train_TE else self.TE_unet.TE
         return self.TE_unet.TE
 
 if __name__ == '__main__':

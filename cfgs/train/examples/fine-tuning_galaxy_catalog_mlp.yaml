@@ -1,0 +1,66 @@
+_base_:
+  - cfgs/train/dataset/base_dataset.yaml
+  - cfgs/train/train_base.yaml
+  - cfgs/train/tuning_base.yaml
+
+train:
+  save_step: 10000
+  train_steps: 150000
+  max_grad_norm: 1.0
+  scale_lr: False
+
+  scheduler:
+    name: "one_cycle"
+    num_warmup_steps: 5000
+    num_training_steps: ${train.train_steps}
+    scheduler_kwargs: {}
+
+model:
+  pretrained_model_name_or_path: "runwayml/stable-diffusion-v1-5"
+  tokenizer_repeats: 1
+  ema_unet: 1
+  ema_text_encoder: 1
+  text_encoder:
+    _target_: hcpdiff.models.textencoder_catalog.CatalogTextEncoder
+    feature_dim: 22   # 21维 + EBV = 22维
+    hidden_dim: 1024
+    output_dim: 768
+    norm_stats_path: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/normalization_stats_v3.csv"
+
+unet:
+  - lr: 3e-6
+    layers:
+      - ""
+
+text_encoder:
+  - lr: 1e-5
+    layers:
+      - ""
+
+data_cfg:
+  batch_size: 16
+  img_root: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/filtered_data"
+  catalog_file: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/labeled_catalog_cleaned_v3.csv"  # 改为 v3
+  target_area: 192*192
+
+data:
+  dataset1:
+    batch_size: ${data_cfg.batch_size}
+    cache_latents: True
+    cache_path: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/latent_cache_v3/"  # 改为 v3，避免和旧 cache 混用
+
+    source:
+      data_source1:
+        _target_: hcpdiff.data.source.text2img_catalog.Text2ImageCatalogSource
+        img_root: ${data_cfg.img_root}
+        catalog_file: ${data_cfg.catalog_file}
+        text_transforms:
+          _target_: torchvision.transforms.Compose
+          transforms:
+            - _target_: hcpdiff.utils.caption_tools.TemplateFill
+              word_names: {}
+
+    bucket:
+      _target_: hcpdiff.data.bucket.SizeBucket.from_files
+      target_area: ${data_cfg.target_area}
+      num_bucket: 1

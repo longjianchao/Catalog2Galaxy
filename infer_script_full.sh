@@ -5,21 +5,24 @@ export CUDA_VISIBLE_DEVICES=1
 export HF_ENDPOINT=https://hf-mirror.com 
 
 # model name and steps
-name="2025-05-11-22-14-55"
+name="2026-02-27"
 model_steps=10000
 
 # define prompt_dict
 prompt_dict=(
-    
-    "cigar 'sdss, smooth, cigar shaped galaxy'"
-    "in_between 'sdss, smooth, in-between round galaxy'"
-    "compelete_round 'sdss, smooth, completely round galaxy'"
-    "spiral_2_arm 'sdss, spiral galaxy, obvious bulge prominence, tightly wound spiral arms, 2 spiral arms'"
+    # "jwst_cigar 'jwst, smooth, cigar shaped galaxy'"
+    # "jwst_ring 'jwst, ring galaxy'"
+    # "jwst_edge_on 'jwst, edge-on galaxy, with rounded edge-on bulge'"
+    # "cigar 'sdss, smooth, cigar shaped galaxy'"
+    # "in_between 'sdss, smooth, in-between round galaxy'"
+    # "compelete_round 'sdss, smooth, completely round galaxy'"
+    # "spiral_2_arm 'sdss, spiral galaxy, obvious bulge prominence, tightly wound spiral arms, 2 spiral arms'"
     # "edge_on 'sdss, edge-on galaxy, with rounded edge-on bulge'"
-    # "merger_in-between 'sdss, smooth, in-between round galaxy, merger'"
+    "merger_in-between 'sdss, smooth, in-between round galaxy, merger'"
     # "merger_spiral 'sdss, spiral galaxy, just noticeable bulge prominence, tightly wound spiral arms, 2 spiral arms, a merger'"
     # "dust_lane 'sdss, elliptical galaxy, dust lane'"
     # "ring 'sdss, ring galaxy'"
+    # "strong_gravitational_lens, perfect Einstein ring, background lensed galaxy, smooth foreground lens galaxy, high resolution, realistic"
 
     # "hst_in_between 'hubble, smooth, in-between round galaxy'"
     # "hst_compelete_round 'hubble, smooth, something odd, completely round galaxy'"
@@ -29,7 +32,6 @@ prompt_dict=(
     # "candels_merger 'candels, smooth, in-between round, merging galaxies'"
     # "candels_spiral 'candels, features or disk-shaped, spiral arms pattern, tightly wound spiral arms, obvious bulge prominence'"
     # "candels_clump 'candels, features or disk-shaped, mostly clumpy appearance, there are five or more clumps, the clumps appear in cluster or irregular, no single brightest clump, clumps are not symmetrical, clumps are embedded'"
-
     # ... add more prompt key-value pairs
 )
 
@@ -38,7 +40,7 @@ for prompt_pair in "${prompt_dict[@]}"; do
     # split key and value
     IFS=' ' read -r prompt_name prompt <<<"$prompt_pair"
 
-    command="python -m hcpdiff.visualizer \
+    command="python3 -m hcpdiff.visualizer \
         --cfg cfgs/infer/text2img_galaxy_full.yaml \
         exp_dir=exps/${name} \
         model_steps=${model_steps} \
@@ -51,4 +53,4 @@ for prompt_pair in "${prompt_dict[@]}"; do
 done
 
 # # optional: create a summary of the generated images by different prompts
-# python create_summary.py -output_dir "output/${name}" -model_steps ${model_steps}
+# python3 create_summary.py -output_dir "output/${name}" -model_steps ${model_steps}

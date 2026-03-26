@@ -1,0 +1,50 @@
+# 图像数据和输出
+output/
+
+# 模型文件和权重
+exps/
+embs/
+cfgs/train/models/
+
+# 虚拟环境和依赖
+venv/
+miniconda3/
+
+# 缓存文件
+__pycache__/
+*.pyc
+.vscode/
+
+# 大型文件
+*.png
+*.pdf
+img_names.txt
+tag_names.txt
+
+# 日志文件
+*.log
+
+# 临时文件
+*.tmp
+*.temp
+
+# 环境变量文件
+.env
+
+# 构建文件
+build/
+dist/
+
+# IDE相关文件
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 操作系统相关文件
+.DS_Store
+Thumbs.db
+
+cfgs/train/data/
+cfgs/train/models/pretrained_model/

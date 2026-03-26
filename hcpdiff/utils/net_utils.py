@@ -90,37 +90,63 @@ def auto_tokenizer_cls(pretrained_model_name_or_path: str, revision: str = None)
             revision=revision, use_fast=False,
         )
         return SDXLTokenizer
-    except OSError:
+    except (OSError, ValueError):
         # not sdxl, only one tokenizer
-        return AutoTokenizer
+        try:
+            # Try to load from tokenizer subfolder (for Stable Diffusion models)
+            tokenizer = AutoTokenizer.from_pretrained(
+                pretrained_model_name_or_path, subfolder="tokenizer",
+                revision=revision, use_fast=False,
+            )
+            return AutoTokenizer
+        except (OSError, ValueError):
+            # Try to load without subfolder
+            return AutoTokenizer
 
 def auto_text_encoder_cls(pretrained_model_name_or_path: str, revision: str = None):
     from hcpdiff.models.compose import SDXLTextEncoder
     try:
-        text_encoder_config = PretrainedConfig.from_pretrained(
+        # First, check if it's a Stable Diffusion model by trying to load the unet config
+        from transformers import PretrainedConfig
+        unet_config = PretrainedConfig.from_pretrained(
             pretrained_model_name_or_path,
-            subfolder="text_encoder_2",
+            subfolder="unet",
             revision=revision,
         )
-        return SDXLTextEncoder
-    except OSError:
-        text_encoder_config = PretrainedConfig.from_pretrained(
-            pretrained_model_name_or_path,
-            subfolder="text_encoder",
-            revision=revision,
-        )
-        model_class = text_encoder_config.architectures[0]
+        # If we get here, it's likely a Stable Diffusion model
+        from transformers import CLIPTextModel
+        return CLIPTextModel
+    except Exception:
+        # If not, try to check if it's an SDXL model
+        try:
+            text_encoder_config = PretrainedConfig.from_pretrained(
+                pretrained_model_name_or_path,
+                subfolder="text_encoder_2",
+                revision=revision,
+            )
+            return SDXLTextEncoder
+        except Exception:
+            # If all else fails, try to load from text_encoder subfolder
+            try:
+                text_encoder_config = PretrainedConfig.from_pretrained(
+                    pretrained_model_name_or_path,
+                    subfolder="text_encoder",
+                    revision=revision,
+                )
+                model_class = text_encoder_config.architectures[0]
 
-        if model_class == "CLIPTextModel":
-            from transformers import CLIPTextModel
-
-            return CLIPTextModel
-        elif model_class == "RobertaSeriesModelWithTransformation":
-            from diffusers.pipelines.alt_diffusion.modeling_roberta_series import RobertaSeriesModelWithTransformation
-
-            return RobertaSeriesModelWithTransformation
-        else:
-            raise ValueError(f"{model_class} is not supported.")
+                if model_class == "CLIPTextModel":
+                    from transformers import CLIPTextModel
+                    return CLIPTextModel
+                elif model_class == "RobertaSeriesModelWithTransformation":
+                    from diffusers.pipelines.alt_diffusion.modeling_roberta_series import RobertaSeriesModelWithTransformation
+                    return RobertaSeriesModelWithTransformation
+                else:
+                    raise ValueError(f"{model_class} is not supported.")
+            except Exception:
+                # Default to CLIPTextModel for Stable Diffusion models
+                from transformers import CLIPTextModel
+                return CLIPTextModel
 
 def auto_tokenizer(pretrained_model_name_or_path: str, revision: str = None, **kwargs):
     return auto_tokenizer_cls(pretrained_model_name_or_path, revision).from_pretrained(pretrained_model_name_or_path, revision=revision, **kwargs)

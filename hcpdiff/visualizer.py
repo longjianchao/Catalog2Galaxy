@@ -74,9 +74,9 @@ class Visualizer:
                                                  clip_final_norm=self.cfgs.clip_final_norm, use_attention_mask=self.cfgs.encoder_attention_mask)
         self.token_ex = TokenizerHook(self.pipe.tokenizer)
 
-        if is_xformers_available():
-            self.pipe.unet.enable_xformers_memory_efficient_attention()
-            # self.te_hook.enable_xformers()
+        # if is_xformers_available():
+        #     self.pipe.unet.enable_xformers_memory_efficient_attention()
+        #     # self.te_hook.enable_xformers()
 
     def save_model(self, save_cfg):
         for k, v in self.pipe.unet.named_modules():
