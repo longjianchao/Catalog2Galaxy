@@ -17,13 +17,13 @@ from skimage.transform import rotate
 # ⚙️ 科学配置 (Scientific Config)
 # ==========================================
 class Config:
-    IMG_DIR = "output/2026-03-23_catalog_infer"
-    CAT_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/labeled_catalog_cleaned_v2.csv"
+    IMG_DIR = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/val_results_150k/fake_only"
+    CAT_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/validation_catalog_2500.csv"
     SAVE_DIR = "validation"
     
     PIXEL_SCALE = 0.262  # arcsec/pixel
     EBV_COEFFS = {'G': 3.214, 'R': 2.165, 'Z': 1.211}
-    CHANNELS = {'G': 0, 'R': 1, 'Z': 2} # 对应图像 RGB 索引
+    CHANNELS = {'G': 2, 'R': 1, 'Z': 0} # 对应图像 RGB 索引
 
 # ==========================================
 # 🛠️ 核心验证套件
@@ -53,8 +53,13 @@ class GalaxyScientificSuiteV3:
                 data_dict[band] = np.maximum(band_data - median, 0)
 
             # 3. 质心检测与孔径设置
-            y_c, x_c = centroid_com(data_dict['R'])
+            if np.sum(data_dict['R']) > 0:
+                y_c, x_c = centroid_com(data_dict['R'])
+            else:
+                y_c, x_c = 96, 96  # 默认中心位置
+            
             re_pix = cat_row['DESIDR1_SHAPE_R'] / Config.PIXEL_SCALE
+            re_pix = max(1.0, re_pix)  # 确保最小有效半径
             ap_r = max(5.0, re_pix * 2.5)
             aperture = CircularAperture((x_c, y_c), r=ap_r)
 
@@ -72,9 +77,16 @@ class GalaxyScientificSuiteV3:
             radii = np.linspace(1, ap_r * 2, 50)
             flux_prof = [ApertureStats(z_data, CircularAperture((x_c, y_c), r=r)).sum for r in radii]
             if flux_prof[-1] > 0:
-                r20 = np.interp(0.2 * flux_prof[-1], flux_prof, radii)
-                r80 = np.interp(0.8 * flux_prof[-1], flux_prof, radii)
-                res['C_meas'] = 5 * np.log10(r80 / r20) if r20 > 0 else np.nan
+                # 确保找到有效的 r20 和 r80
+                if flux_prof[0] < 0.2 * flux_prof[-1] and flux_prof[0] < 0.8 * flux_prof[-1]:
+                    r20 = np.interp(0.2 * flux_prof[-1], flux_prof, radii)
+                    r80 = np.interp(0.8 * flux_prof[-1], flux_prof, radii)
+                    if r20 > 0 and r80 > r20:
+                        res['C_meas'] = 5 * np.log10(r80 / r20)
+                    else:
+                        res['C_meas'] = np.nan
+                else:
+                    res['C_meas'] = np.nan
             else:
                 res['C_meas'] = np.nan
 
@@ -99,33 +111,49 @@ class GalaxyScientificSuiteV3:
             return res
 
         except Exception as e:
+            print(f"[!] 测量失败: {e}")
             return None
 
     def run(self):
-        img_files = [f for f in os.listdir(Config.IMG_DIR) if f.endswith('.png')]
+        img_files = [f for f in os.listdir(Config.IMG_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
         records = []
 
         print(f"[*] 正在分析图像...")
         for fname in tqdm(img_files):
-            idx = fname.split('.')[0]
-            if idx not in self.cat.index: continue
+            idx = str(os.path.splitext(fname)[0])  # 更可靠的扩展名处理
+            if idx not in self.cat.index:
+                print(f"[!] 索引不存在: {idx}")
+                continue
             
             row = self.cat.loc[idx]
             m = self.measure_galaxy(os.path.join(Config.IMG_DIR, fname), row)
             
-            if m:
-                # 物理颜色理论值计算
-                ebv = float(row['MassEMLine_EBV'])
-                try:
+            if m is None:
+                print(f"[!] 测量失败: {fname}")
+                continue
+            
+            # 物理颜色理论值计算
+            ebv = float(row['MassEMLine_EBV'])
+            try:
+                if row['DESIDR1_FLUX_G'] > 0 and row['DESIDR1_FLUX_R'] > 0:
                     c_int = -2.5 * np.log10(row['DESIDR1_FLUX_G'] / row['DESIDR1_FLUX_R'])
                     m['color_theory'] = c_int + (Config.EBV_COEFFS['G'] - Config.EBV_COEFFS['R']) * ebv
-                    m['color_meas'] = -2.5 * np.log10(m['flux_g_meas'] / m['flux_r_meas'] + 1e-10)
-                except:
-                    m['color_theory'], m['color_meas'] = np.nan, np.nan
-                
-                m['sersic_cat'] = row['DESIDR1_SERSIC']
-                m['ecc_cat'] = np.sqrt(row['DESIDR1_SHAPE_E1']**2 + row['DESIDR1_SHAPE_E2']**2)
-                records.append(m)
+                else:
+                    m['color_theory'] = np.nan
+            except Exception as e:
+                m['color_theory'] = np.nan
+            
+            try:
+                if m['flux_g_meas'] > 0 and m['flux_r_meas'] > 0:
+                    m['color_meas'] = -2.5 * np.log10(m['flux_g_meas'] / m['flux_r_meas'])
+                else:
+                    m['color_meas'] = np.nan
+            except Exception as e:
+                m['color_meas'] = np.nan
+            
+            m['sersic_cat'] = row['DESIDR1_SERSIC']
+            m['ecc_cat'] = np.sqrt(row['DESIDR1_SHAPE_E1']**2 + row['DESIDR1_SHAPE_E2']**2)
+            records.append(m)
 
         # 统计分析与保存
         df = pd.DataFrame(records).dropna()

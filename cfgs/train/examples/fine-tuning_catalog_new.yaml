@@ -1,0 +1,84 @@
+_base_:
+  - cfgs/train/dataset/base_dataset.yaml
+  - cfgs/train/train_base.yaml
+  - cfgs/train/tuning_base.yaml
+
+train:
+  # 🚀 建议再跑 30,000 ~ 50,000 步，专注于物理对齐
+  save_step: 5000
+  train_steps: 180000 # 在原有的 150k 基础上增加 30k
+  max_grad_norm: 1.0
+  scale_lr: False
+  
+  # 恢复训练配置
+  resume:
+    ckpt_path:
+      unet: 
+        - "exps/2026-03-26-11-53-21/ckpts/unet-150000.safetensors"
+      TE: 
+        - "exps/2026-03-26-11-53-21/ckpts/text_encoder-150000.safetensors"
+      words: {}
+    start_step: 150000
+
+  scheduler:
+    name: "one_cycle"
+    # 微调阶段不需要太长的预热，让模型快速进入战斗状态
+    num_warmup_steps: 1000 
+    num_training_steps: ${train.train_steps}
+    scheduler_kwargs: {}
+
+model:
+  pretrained_model_name_or_path: "runwayml/stable-diffusion-v1-5"
+  tokenizer_repeats: 1
+  ema_unet: 1
+  ema_text_encoder: 1
+  text_encoder:
+    _target_: hcpdiff.models.textencoder_catalog.CatalogTextEncoder
+    feature_dim: 22
+    hidden_dim: 1024
+    output_dim: 768
+    # 保持 V3 统计量路径
+    norm_stats_path: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/normalization_stats_v3.csv"
+
+# ── 🔴 核心修改区：非对称学习率注入 ──
+
+unet:
+  - lr: 1e-6  # 🚀 大幅压低 UNet LR，保护已经练好的星系生成能力，仅微调注意力权重
+    layers:
+      - ""
+
+text_encoder:
+  - lr: 5e-5  # 🚀 提高 5 倍！强迫从零开始的 MLP 快速找到正确的物理投影坐标
+    layers:
+      - ""
+
+# ────────────────────────────────────
+
+data_cfg:
+  batch_size: 16
+  img_root: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/filtered_data"
+  catalog_file: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/labeled_catalog_cleaned_v3.csv"
+  target_area: 192*192
+
+data:
+  dataset1:
+    batch_size: ${data_cfg.batch_size}
+    # 💡 建议微调阶段关闭缓存，或者确保 cache 路径是全新的，防止旧的潜在语义污染
+    cache_latents: True 
+    cache_path: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/latent_cache_tuning/"
+
+    source:
+      data_source1:
+        _target_: hcpdiff.data.source.text2img_catalog.Text2ImageCatalogSource
+        img_root: ${data_cfg.img_root}
+        catalog_file: ${data_cfg.catalog_file}
+        text_transforms:
+          _target_: torchvision.transforms.Compose
+          transforms:
+            - _target_: hcpdiff.utils.caption_tools.TemplateFill
+              word_names: {}
+
+    bucket:
+      _target_: hcpdiff.data.bucket.SizeBucket.from_files
+      target_area: ${data_cfg.target_area}
+      num_bucket: 1

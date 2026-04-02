@@ -16,4 +16,4 @@ accelerate launch \
     --mixed_precision="bf16" \
     --main_process_port 29501 \
     hcpdiff/train_ac_single.py \
-    --cf cfgs/train/examples/fine-tuning_galaxy_catalog_mlp.yaml
+    --cf cfgs/train/examples/fine-tuning_catalog_new.yaml
