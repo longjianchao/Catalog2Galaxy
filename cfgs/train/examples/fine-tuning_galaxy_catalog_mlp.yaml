@@ -25,6 +25,7 @@ model:
     feature_dim: 22   # 21维 + EBV = 22维
     hidden_dim: 1024
     output_dim: 768
+    num_tokens: 22    # 🌟 显式声明，明确告诉框架我们斩断了 77 的限制，只用 22 个纯物理 Token
     norm_stats_path: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/normalization_stats_v3.csv"
 
 unet:

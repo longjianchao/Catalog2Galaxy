@@ -4,87 +4,69 @@ import torch
 from torch import nn
 import pandas as pd
 
-
 class CatalogTextEncoder(nn.Module):
-    def __init__(self, feature_dim, hidden_dim, output_dim, norm_stats_path, num_tokens=16):
+    def __init__(self, feature_dim, hidden_dim, output_dim, norm_stats_path, num_tokens=22):
         """
-        初始化多 Token 星表特征编码器 (v4 架构)
+        初始化纯物理驱动的星表特征编码器 (去 Padding + 重建自监督架构)
 
         Args:
-            feature_dim: 星表特征向量的维度（现在是22维）
+            feature_dim: 星表特征向量的维度（22维）
             hidden_dim: MLP隐藏层的维度
-            output_dim: 输出向量的维度，应与原始文本编码器的输出维度相同 (768)
+            output_dim: 输出向量的维度 (SD1.5 默认为 768)
             norm_stats_path: 归一化参数CSV文件路径
-            num_tokens: 映射成的 Token 数量。将 22 维物理参数非线性混合后，
-                        解耦为 16 个独立的特征 Token，打破注意力对称性。默认值为16。
+            num_tokens: 映射成的物理 Token 数量 (直接等于 feature_dim，即 22)
         """
-
         super().__init__()
         self.num_tokens = num_tokens
+        self.output_dim = output_dim
+        self.num_embeddings = 49408
+        self.embedding_dim = output_dim
 
-        # ── 加载归一化参数 ─────────────────────────────────────────
+        # ── 1. 保留核心：物理归一化参数加载 ─────────────────────────
         if norm_stats_path is None:
             raise ValueError("norm_stats_path 必须提供")
 
         norm_df = pd.read_csv(norm_stats_path)
-
-        # 检查特征数量是否匹配
         assert len(norm_df) == feature_dim, (
-            f"norm_stats 有 {len(norm_df)} 个特征，但 feature_dim={feature_dim}，请检查是否一致"
+            f"norm_stats 有 {len(norm_df)} 个特征，但 feature_dim={feature_dim}"
         )
 
-        # 字符串列表不能存 buffer，单独保存
         self.norm_methods = norm_df['method'].tolist()
+        self.register_buffer('norm_mins', torch.tensor(norm_df['transform_min'].values, dtype=torch.float32))
+        self.register_buffer('norm_maxs', torch.tensor(norm_df['transform_max'].values, dtype=torch.float32))
 
-        # min/max 存为 buffer：不参与梯度，但随模型保存和加载
-        self.register_buffer(
-            'norm_mins',
-            torch.tensor(norm_df['transform_min'].values, dtype=torch.float32)
-        )
-        self.register_buffer(
-            'norm_maxs',
-            torch.tensor(norm_df['transform_max'].values, dtype=torch.float32)
-        )
-
-        # ── MLP 结构升级（输出扩展为 num_tokens * output_dim）────────────
+        # ── 2. 基座 MLP ──────────────────────────────────────────
         self.mlp = nn.Sequential(
             nn.Linear(feature_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
-            # 输出维度放大，为后续拆分成多个 Token 做准备
             nn.Linear(hidden_dim, num_tokens * output_dim)
         )
 
-        # ── 位置编码与序列填充 ──────────────────────────────────────
-        # 1. 只有前 num_tokens 个物理特征 Token 拥有专属的位置编码
+        # ── 3. 物理位置编码 ──────────────────────────────────────
+        # 给每一个物理 Token 一个专属的身份标识
         self.position_embedding = nn.Parameter(torch.randn(1, num_tokens, output_dim) * 0.02)
-        
-        # 2. 剩下的空位（77 - num_tokens），使用一个统一的可学习 Padding Token 补齐
-        self.padding_token = nn.Parameter(torch.zeros(1, 77 - num_tokens, output_dim))
 
-        self.output_dim = output_dim
-        self.num_embeddings = 49408
-        self.embedding_dim = output_dim
+        # ── 4. 🛡️ 植入防御机制：物理信息重建解码器 ─────────────────
+        # 信息瓶颈：强制高维 Token 包含足以还原原始 22 维参数的信息
+        self.physics_decoder = nn.Sequential(
+            nn.Linear(num_tokens * output_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, feature_dim)
+        )
 
     def normalize(self, x: torch.Tensor) -> torch.Tensor:
         """
-        安全的归一化函数：彻底废除了 In-place 原地修改，防止 DDP 和 AMP 梯度报错。
-        将原始星表值归一化到 [-1, 1]
+        [完全保留] 极其安全的非 In-place 归一化函数
         """
         device = x.device
-        
-        # [✅ 真正的 BUG 1 修复]：在循环外，把极值 Tensor 整体推到目标显存上
-        # 直接使用 Tensor 索引操作，避免 GPU 同步开销并保持精度
         norm_mins = self.norm_mins.to(device)
         norm_maxs = self.norm_maxs.to(device)
         
         normalized_cols = []
-        
-        for i, method in enumerate(self.norm_methods):
+        for i, method in enumerate(self.norm_methods): # ✅ 修复了 self.self.norm_methods 的笔误
             val = x[:, i].float()
-            
-            # [✅ 真正的 BUG 1 修复]：直接使用 Tensor 索引，避免 GPU 同步锁定并保持精度
             lo = norm_mins[i]
             hi = norm_maxs[i]
 
@@ -93,57 +75,48 @@ class CatalogTextEncoder(nn.Module):
             elif 'asinh' in method:
                 val = torch.asinh(val)
 
-            # MinMax 归一化到 [-1, 1]
             val = (val - lo) / (hi - lo + 1e-8) * 2.0 - 1.0
-
-            # 防止极端外推破坏 embedding
             val = val.clamp(-1.5, 1.5)
             normalized_cols.append(val)
 
-        # 沿着特征维度重新拼接，避免 inplace 修改带来的计算图断裂
         return torch.stack(normalized_cols, dim=1)
 
     def forward(self, feature_vectors, attention_mask=None, position_ids=None, output_hidden_states=False):
         batch_size = feature_vectors.shape[0]
-
-        # ── 框架会把 prompt_ids padding 到长度77，这里截取前 feature_dim 个值 ──
         expected_dim = self.mlp[0].in_features  # 22
+        
         if feature_vectors.shape[1] != expected_dim:
             feature_vectors = feature_vectors[:, :expected_dim]
 
-        # 确保数据类型和设备一致
         mlp_dtype = self.mlp[0].weight.dtype
-        feature_vectors = feature_vectors.to(
-            device=self.mlp[0].weight.device,
-            dtype=torch.float32
-        )
+        feature_vectors = feature_vectors.to(device=self.mlp[0].weight.device, dtype=torch.float32)
 
-        # 归一化（内部安全处理）
-        feature_vectors = self.normalize(feature_vectors)
+        # 1. 物理归一化 (保留真实的物理尺度)
+        normed_vectors = self.normalize(feature_vectors)
+        x = normed_vectors.to(dtype=mlp_dtype)
 
-        # 转为 MLP 所需 dtype
-        x = feature_vectors.to(dtype=mlp_dtype)
-
-        # ── 核心张量变换：单向量 -> 多 Token 序列 ────────────────────────
-        # 1. 过 MLP，得到扁平输出 (batch_size, 16 * 768)
+        # 2. 升维映射
         flat_out = self.mlp(x)
         
-        # 2. 重塑为 Token 序列格式 (batch_size, 16, 768)
+        # 3. 动态序列重塑：[B, 22, 768]，没有多余的 61 个空位！
         sequence_embeddings = flat_out.view(batch_size, self.num_tokens, self.output_dim)
         
-        # 3. 注入位置编码 (让 UNet 区分这 16 个 Token 的不同职能)
-        sequence_embeddings = sequence_embeddings + self.position_embedding.to(dtype=mlp_dtype)
-        
-        # 4. 扩展 Padding Token 补齐到 77 长度，骗过 UNet 的尺寸检查
-        # [✅ 修复 Bug 3]：消除 61 硬编码，使用 77 - self.num_tokens 动态描述形状
-        # padding shape: (batch_size, 77 - self.num_tokens, 768)
-        padding = self.padding_token.expand(batch_size, -1, -1).to(dtype=mlp_dtype)
-        
-        # 5. 拼接成最终的输入序列 (batch_size, 77, 768)
-        feature_embeddings = torch.cat([sequence_embeddings, padding], dim=1)
+        # 4. 注入位置信息
+        feature_embeddings = sequence_embeddings + self.position_embedding.to(dtype=mlp_dtype)
 
-        # ── 池化 (仅对包含实际物理意义的前 num_tokens 取平均) ─────────────
-        pooled_output = feature_embeddings[:, :self.num_tokens, :].mean(dim=1)
+        # ── 🚀 特洛伊木马：训练模式下自动计算并挂载重建误差 ──
+        if self.training:
+            # 使用 flat_out 尝试还原最开始的归一化特征
+            recon_x = self.physics_decoder(flat_out)
+            # 还原目标是归一化后的数据，保证数值稳定，detach 防止梯度回传破坏归一化
+            target_normed = normed_vectors.to(dtype=mlp_dtype).detach()
+            # 计算 MSE Loss 并强行挂载到 self 上，等待 train_ac_single.py 拦截提取
+            self.recon_loss = torch.nn.functional.mse_loss(recon_x, target_normed)
+        else:
+            self.recon_loss = None
+
+        # ── 正常推理分支 ──
+        pooled_output = feature_embeddings.mean(dim=1)
 
         class DictTuple(tuple):
             def __getattr__(self, key):

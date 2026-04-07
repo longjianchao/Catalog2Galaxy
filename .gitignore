@@ -5,6 +5,7 @@ output/
 exps/
 embs/
 cfgs/train/models/
+regressor_output/
 
 # 虚拟环境和依赖
 venv/
@@ -38,6 +39,7 @@ dist/
 # IDE相关文件
 .idea/
 .vscode/
+.trae/
 *.swp
 *.swo
 *~

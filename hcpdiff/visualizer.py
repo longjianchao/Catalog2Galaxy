@@ -59,7 +59,9 @@ class Visualizer:
         if self.offload:
             self.build_offload(self.cfgs.offload)
         else:
-            self.pipe.unet.to('cuda')
+            # 使用可用的设备
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.pipe.unet.to(device)
         self.build_vae_offload()
 
         if getattr(self.cfgs, 'vae_optimize', None) is not None:
@@ -119,21 +121,26 @@ class Visualizer:
 
     def build_vae_offload(self):
         def vae_decode_offload(latents, return_dict=True, decode_raw=self.pipe.vae.decode):
-            if self.need_inter_imgs:
-                to_cuda(self.pipe.vae)
+            # 检查是否在 CPU 环境中
+            if not torch.cuda.is_available():
+                # 在 CPU 环境中直接解码
                 res = decode_raw(latents, return_dict=return_dict)
             else:
-                to_cpu(self.pipe.unet)
-
-                if self.offload and self.cfgs.offload.vae_cpu:
-                    self.pipe.vae.to(dtype=torch.float32)
-                    res = decode_raw(latents.cpu().to(dtype=torch.float32), return_dict=return_dict)
-                else:
+                if self.need_inter_imgs:
                     to_cuda(self.pipe.vae)
-                    res = decode_raw(latents.to(dtype=self.pipe.vae.dtype), return_dict=return_dict)
+                    res = decode_raw(latents, return_dict=return_dict)
+                else:
+                    to_cpu(self.pipe.unet)
 
-                to_cpu(self.pipe.vae)
-                to_cuda(self.pipe.unet)
+                    if self.offload and self.cfgs.offload.vae_cpu:
+                        self.pipe.vae.to(dtype=torch.float32)
+                        res = decode_raw(latents.cpu().to(dtype=torch.float32), return_dict=return_dict)
+                    else:
+                        to_cuda(self.pipe.vae)
+                        res = decode_raw(latents.to(dtype=self.pipe.vae.dtype), return_dict=return_dict)
+
+                    to_cpu(self.pipe.vae)
+                    to_cuda(self.pipe.unet)
             return res
 
         self.pipe.vae.decode = vae_decode_offload

@@ -17,7 +17,7 @@ from skimage.transform import rotate
 # ⚙️ 科学配置 (Scientific Config)
 # ==========================================
 class Config:
-    IMG_DIR = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/val_results_150k/fake_only"
+    IMG_DIR = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/val_results_150k_dps/fake_only"
     CAT_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/validation_catalog_2500.csv"
     SAVE_DIR = "validation"
     
