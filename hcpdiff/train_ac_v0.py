@@ -403,13 +403,13 @@ class Trainer:
                 if self.global_step%self.min_log_step == 0:
                     # get learning rate from optimizer
                     lr_model = self.optimizer.param_groups[0]['lr'] if hasattr(self, 'optimizer') else 0.
-                    lr_word = self.optimizer_pt.param_groups[0]['lr'] if hasattr(self, 'optimizer_pt') else 0.
+                    loss_recon = getattr(self, 'current_loss_recon', None) if hasattr(self, 'current_loss_recon') else None
                     self.loggers.log(datas={
                         'Step':{'format':'[{}/{}]', 'data':[self.global_step, self.cfgs.train.train_steps]},
                         'Epoch':{'format':'[{}/{}]<{}/{}>', 'data':[self.global_step//self.steps_per_epoch, self.cfgs.train.train_epochs,
                             self.global_step%self.steps_per_epoch, self.steps_per_epoch]},
                         'LR_model':{'format':'{:.2e}', 'data':[lr_model]},
-                        'LR_word':{'format':'{:.2e}', 'data':[lr_word]},
+                        'Loss_recon':{'format':'{:.5f}', 'data':[loss_recon if loss_recon is not None else 0.0]},
                         'Loss':{'format':'{:.5f}', 'data':[loss_sum]},
                     }, step=self.global_step)
                 if self.min_img_log_step>0 and self.global_step%self.min_img_log_step == 0:

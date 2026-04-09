@@ -104,8 +104,8 @@ class CatalogTextEncoder(nn.Module):
         # 4. 注入位置信息
         feature_embeddings = sequence_embeddings + self.position_embedding.to(dtype=mlp_dtype)
 
-        # ── 🚀 特洛伊木马：训练模式下自动计算并挂载重建误差 ──
-        if self.training:
+        # ── 🚀 终极特洛伊木马：绕过 eval() 限制，基于计算图状态触发 ──
+        if torch.is_grad_enabled():
             # 使用 flat_out 尝试还原最开始的归一化特征
             recon_x = self.physics_decoder(flat_out)
             # 还原目标是归一化后的数据，保证数值稳定，detach 防止梯度回传破坏归一化

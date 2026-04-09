@@ -2,7 +2,7 @@
 export CUDA_VISIBLE_DEVICES=1
 export HF_ENDPOINT=https://hf-mirror.com
 
-name="2026-04-02"  # 替换为你的真实实验名称
+name="2026-04-08"  # 替换为你的真实实验名称
 
 
 # ⚠️ 必须传入你【训练时使用的完整大星表】，以保证算出来的均值/方差和训练时绝对一致！
@@ -15,9 +15,9 @@ stats_file="/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_
 
 output_dir="output/${name}_catalog_infer_dps"
 
-indexs="284731 288533 32549"
+# indexs="284731 288533 32549"
 # indexs="256830 155321 273391"
-# indexs="4 11 19 22"
+indexs="4 11 19 22"
 # indexs="59771 329218 50184 106016"
 # indexs="105998 105999 284900 105986 105987 329340 105967 106312 105936 105993"
 

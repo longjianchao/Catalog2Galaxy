@@ -4,6 +4,7 @@ _base_:
   - cfgs/train/tuning_base.yaml
 
 train:
+  train_TE: True
   save_step: 10000
   train_steps: 150000
   max_grad_norm: 1.0

@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 from functools import partial
 
@@ -8,7 +9,10 @@ from loguru import logger
 
 from hcpdiff.train_ac import Trainer, RatioBucket, load_config_with_cli, set_seed, get_sampler
 
-torch.autograd.set_detect_anomaly(True)
+# ⚠️ 仅在环境变量 DEBUG_ANOMALY=1 时开启异常检测，正式训练不要开（慢30-50%）
+if os.environ.get('DEBUG_ANOMALY'):
+    torch.autograd.set_detect_anomaly(True)
+
 
 class TrainerSingleCard(Trainer):
     def init_context(self, cfgs_raw):
@@ -18,44 +22,51 @@ class TrainerSingleCard(Trainer):
             step_scheduler_with_optimizer=False,
         )
 
-        self.local_rank = 0 
+        self.local_rank = 0
         self.world_size = self.accelerator.num_processes
 
         set_seed(self.cfgs.seed + self.local_rank)
 
     @property
     def unet_raw(self):
-        # 如果 self.TE_unet 有 module 属性，说明是多卡 DDP 包装过的，取 .module.unet
-        if hasattr(self.TE_unet, 'module'):
-            return self.TE_unet.module.unet if self.train_TE else self.TE_unet.unet.module
-        # 否则说明是单卡，维持原样
-        return self.TE_unet.unet
+        # 统一处理：无论单卡还是 DDP 包装，先剥掉 .module 再取 .unet
+        base = self.TE_unet.module if hasattr(self.TE_unet, 'module') else self.TE_unet
+        return base.unet
 
     @property
     def TE_raw(self):
-        if hasattr(self.TE_unet, 'module'):
-            return self.TE_unet.module.TE if self.train_TE else self.TE_unet.TE
-        return self.TE_unet.TE
+        # 统一处理：无论单卡还是 DDP 包装，先剥掉 .module 再取 .TE
+        base = self.TE_unet.module if hasattr(self.TE_unet, 'module') else self.TE_unet
+        return base.TE
 
-    # 🚀 核心修复：拦截 get_loss，完美融入 hcpdiff 生态！
     def get_loss(self, model_pred, target, timesteps, *args, **kwargs):
-        # 1. 先让 hcpdiff 算完标准的扩散去噪 Loss (默认返回一个字典)
+        # 1. 先让 hcpdiff 算完标准扩散去噪 Loss
         loss_dict = super().get_loss(model_pred, target, timesteps, *args, **kwargs)
-        
-        # 2. 提取我们在 CatalogTextEncoder 里挂载好的物理重建误差
+
+        # 2. 拦截 CatalogTextEncoder 挂载的物理重建 Loss
         TE = self.TE_raw
-        if hasattr(TE, 'recon_loss') and isinstance(TE.recon_loss, torch.Tensor):
-            lambda_recon = 0.5  # 物理重建的正则化权重
-            
+        recon_loss = getattr(TE, 'recon_loss', None)
+
+        # 取完立即清零，防止 forward 异常跳过时残留旧值污染下一步
+        TE.recon_loss = None
+
+        self.current_loss_recon = None
+        if isinstance(recon_loss, torch.Tensor):
+            # lambda_recon 建议从 0.05 开始：
+            # diffusion loss 通常在 0.1~0.2 量级，0.05 权重下 recon 贡献约 10~20%
+            # 若进度条里 loss_recon 远大于 loss，适当调小；反之可适当调大
+            lambda_recon = 0.05
+            self.current_loss_recon = recon_loss.item() * lambda_recon
             if isinstance(loss_dict, dict):
-                # 极其优雅：直接将 loss_recon 塞进字典。
-                # hcpdiff 会自动执行 sum() 反向传播，并把 'loss_recon' 打印到你的终端进度条里！
-                loss_dict['loss_recon'] = TE.recon_loss * lambda_recon
+                # hcpdiff 会自动 sum() 所有键的 loss 并反传，
+                # 'loss_recon' 也会出现在终端进度条里，方便监控
+                loss_dict['loss_recon'] = recon_loss * lambda_recon
             else:
-                # 极端防爆措施：如果框架版本不同返回了单一张量，直接相加
-                loss_dict = loss_dict + TE.recon_loss * lambda_recon
-                
+                # 极端兜底：框架版本不同返回单一 Tensor 时直接相加
+                loss_dict = loss_dict + recon_loss * lambda_recon
+
         return loss_dict
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Stable Diffusion Training')

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-大规模验证集 DAPS (解耦退火后验采样) 批量推理脚本：2.5k 星表样本生成
-特性：支持 GPU Batch 并行、复合 Z-score/MinMax 归一化、微批次防 OOM、DAPS 退火解耦步进、全链路 FP32 防爆
+GalaxySD - DAPS 物理引导推理脚本 (40k 开盖验丹版)
+特性：支持 GPU Batch 并行、复合归一化、微批次防 OOM、DAPS 退火解耦步进
 """
 
 import os
@@ -29,14 +29,14 @@ CFG_PATH = "cfgs/infer/text2img_galaxy_catalog.yaml"
 CATALOG_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/labeled_catalog_cleaned_v3.csv"
 INDEX_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/validation_index.txt" 
 REAL_IMG_ROOT = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/filtered_data" 
-OUT_DIR = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/val_results_150k_dps" 
+OUT_DIR = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/val_results_150k_dps" # 建议改名防混淆
 STATS_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/normalization_stats_v3.csv"
 REGRESSOR_CKPT = "regressor_output_v3/best_regressor_v3.pth" 
 
 BATCH_SIZE = 16    
 SEED = 114514      
-LAMBDA_GUIDE = 10.0 # DAPS 的基础引导强度
-SKIP_RATIO = 0.7    # DAPS 需要从第一步就开始平滑退火，不要跳过
+LAMBDA_GUIDE = 10.0 
+SKIP_RATIO = 0.3    # 🚀 [修改 1] DAPS 全局生效，真正测试 40k 基座对推力的承受度
 MICRO_BATCH = 4 
 # =====================================================================
 
@@ -234,7 +234,6 @@ class CatalogInferencerDPS:
                 if buffer.device != device: buffer.data = buffer.data.to(device)
                     
         pipe_dtype = next(pipe.unet.parameters()).dtype
-        
         pipe.vae.to(device, dtype=torch.float32)
         
         infer_args = OmegaConf.to_container(self.cfg.infer_args, resolve=True)
@@ -247,7 +246,6 @@ class CatalogInferencerDPS:
         valid_indexs = [idx for idx in self.target_indexs if idx in self.catalog_dict]
 
         print(f"\n[*] 🚀 开始 DAPS 物理约束高并发生成 (Batch={batch_size}, CFG={guidance_scale}, Base Lambda={LAMBDA_GUIDE})")
-        
         generator = torch.Generator(device=device).manual_seed(seed)
 
         for i in tqdm(range(0, len(valid_indexs), batch_size), desc="Batch Inference"):
@@ -260,13 +258,10 @@ class CatalogInferencerDPS:
             raw_feature_tensor = torch.tensor(np.array(raw_features_list), dtype=pipe_dtype, device=device)
             target_norm_tensor = torch.tensor(np.array(norm_features_list), dtype=torch.float32, device=device)
 
-            # ================== 修复后 ==================
             try:
-                # 🚀 [核心修改 2] 喂给 TextEncoder 原始天文物理真值 (Raw Data)！
                 with torch.no_grad():
                     emb, _ = pipe.text_encoder(raw_feature_tensor) 
                     if do_classifier_free_guidance:
-                        # 负向引导的空特征也必须是原始尺度的零张量
                         null_feature_tensor = torch.zeros_like(raw_feature_tensor)
                         negative_emb, _ = pipe.text_encoder(null_feature_tensor)
                         emb = torch.cat([negative_emb, emb])
@@ -279,7 +274,6 @@ class CatalogInferencerDPS:
                 latents = torch.randn(latents_shape, device=device, dtype=pipe_dtype, generator=generator)
                 latents = latents * pipe.scheduler.init_noise_sigma
 
-                # ================= DAPS 去噪主循环 =================
                 for step_idx, t in enumerate(pipe.scheduler.timesteps):
                     t_tensor = t.to(device, dtype=torch.long) if torch.is_tensor(t) else torch.tensor(t, device=device, dtype=torch.long)
                     
@@ -292,7 +286,6 @@ class CatalogInferencerDPS:
                             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                    # 🚀 [DAPS 核心 1] 退火权重调度
                     alphas_cumprod = pipe.scheduler.alphas_cumprod.to(device)
                     alpha_prod_t = alphas_cumprod[t_tensor]
                     beta_prod_t = 1 - alpha_prod_t
@@ -311,51 +304,46 @@ class CatalogInferencerDPS:
                             
                             for mb_start in range(0, current_bs, MICRO_BATCH):
                                 mb_end = min(mb_start + MICRO_BATCH, current_bs)
+                                is_last = (mb_end == current_bs) # 🚀 [修改 2] 动态释放计算图
                                 
                                 mb_x0_scaled_fp32 = x0_hat_scaled[mb_start:mb_end].to(torch.float32)
-                                # ⚠️ 注意！算 Loss 必须用 target_norm_tensor ("熟肉")
                                 mb_target_fp32 = target_norm_tensor[mb_start:mb_end] 
                                 
                                 mb_pred_images = AutoencoderKL.decode(pipe.vae, mb_x0_scaled_fp32).sample
                                 mb_pred_images = (mb_pred_images / 2 + 0.5).clamp(0, 1) 
                                 
-                                # 🚀 [物理滤镜] 强行抹杀高频对抗作弊噪声
                                 mb_pred_images_blurred = TF.gaussian_blur(mb_pred_images, kernel_size=5, sigma=2.0)
-                                
                                 mb_pred_catalog = self.physics_regressor(mb_pred_images_blurred)
+                                
                                 mb_loss = F.mse_loss(mb_pred_catalog, mb_target_fp32, reduction='sum')
                                 total_loss += mb_loss.item()
                                 
-                                mb_grad_full = torch.autograd.grad(mb_loss, latents_g, retain_graph=True)[0]
+                                # 使用 retain_graph=not is_last 防泄漏
+                                mb_grad_full = torch.autograd.grad(mb_loss, latents_g, retain_graph=not is_last)[0]
                                 grad_accumulator += mb_grad_full
                             
-                            grad = grad_accumulator / current_bs
+                            # 🚀 [修改 3] 严格数学对齐：除以总样本数与特征维度(22)，防止梯度暴增
+                            grad = grad_accumulator / (current_bs * 22.0)
 
-                    # 🚀 [DAPS 核心 2] 解耦更新
                     with torch.no_grad():
                         step_output = pipe.scheduler.step(noise_pred, t, latents)
                         prev_latents = step_output.prev_sample
                         
                         if isinstance(grad, torch.Tensor):
                             grad_fp32 = grad.to(torch.float32)
-                            
-                            # 🚀 [自适应步长] 提取纯方向，按潜变量当前方差缩放，绝不跌出流形！
                             grad_norm = torch.norm(grad_fp32) + 1e-8
                             grad_dir = grad_fp32 / grad_norm
                             latent_std = prev_latents.std().to(torch.float32)
                             
-                            # 退火权重 * 纯方向 * 潜变量方差尺度 * 安全系数
-                            physics_push = daps_weight * grad_dir * latent_std * 0.05
+                            physics_push = daps_weight * grad_dir * latent_std * 0.5
                             
-                            # 观测推力是否在合理区间 (通常在 0.01 ~ 0.5 之间)
-                            if step_idx % 2 == 0:
-                                print(f"    Step {step_idx:02d} | Push Strength: {torch.norm(physics_push).item():.4f}")
+                            # if step_idx % 10 == 0:
+                            #     print(f"    Step {step_idx:02d} | Physics Loss: {(total_loss / (current_bs * 22)):.4f} | Push: {torch.norm(physics_push).item():.4f}")
                                 
                             latents = prev_latents - physics_push.to(pipe_dtype)
                         else:
                             latents = prev_latents
 
-                # ================= 最终生成与保存 =================
                 with torch.no_grad():
                     latents = 1 / pipe.vae.config.scaling_factor * latents
                     latents_fp32 = latents.to(torch.float32)

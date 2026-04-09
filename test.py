@@ -104,26 +104,23 @@ def run_attention_probe(pipe, raw_feature_vector, save_path="attention_probe_res
     print("[*] 数据截获完毕，正在渲染注意力分布能谱...")
     plt.figure(figsize=(14, 7))
     
-    # 颜色隔离设计：前 16 个真实物理参数 (红色), 16-76 伪装 Padding (蓝色)
-    colors = ['#FF4B4B'] * 16 + ['#4B8BFF'] * (77 - 16)
+    # 🚀 修改点 1：横坐标变成 22，全部标记为物理参数（红色）
+    num_tokens = mean_attention.shape[0]  # 现在这里是 22
+    colors = ['#FF4B4B'] * num_tokens 
     
-    plt.bar(range(77), mean_attention, color=colors, edgecolor='black', linewidth=0.5, alpha=0.85)
-    plt.axvline(x=15.5, color='black', linestyle='--', linewidth=2, label='Boundary (Physics vs Padding)')
+    plt.bar(range(num_tokens), mean_attention, color=colors, edgecolor='black', linewidth=0.5, alpha=0.85)
     
-    # 提取核心数据占比
-    physics_mean = np.sum(mean_attention[:16])
-    padding_mean = np.sum(mean_attention[16:])
+    # 🚀 修改点 2：计算总和
+    physics_mean = np.sum(mean_attention)
     
-    plt.title(f"Cross-Attention Weight Distribution Probe\n(Physics Tokens Sum: {physics_mean:.2%} | Padding Sum: {padding_mean:.2%})", 
+    plt.title(f"Cross-Attention Weight Distribution Probe (22-Token Pure Physics)\n(Total Attention Sum: {physics_mean:.2f})", 
               fontsize=16, fontweight='bold', pad=15)
-    plt.xlabel("Text Token Index (0-15: Physics Parameters, 16-76: Padding Tokens)", fontsize=14, labelpad=10)
+    plt.xlabel("Physical Feature Token Index (0-21)", fontsize=14, labelpad=10)
     plt.ylabel("Mean Attention Probability", fontsize=14, labelpad=10)
     
     # 构建高保真图例
     legend_elements = [
-        Patch(facecolor='#FF4B4B', edgecolor='black', label='Physics Parameter Tokens (0-15)'),
-        Patch(facecolor='#4B8BFF', edgecolor='black', label='Padding Tokens (16-76)'),
-        plt.Line2D([0], [0], color='black', linestyle='--', linewidth=2, label='Boundary')
+        Patch(facecolor='#FF4B4B', edgecolor='black', label='Pure Physics Parameter Tokens (0-21)')
     ]
     plt.legend(handles=legend_elements, fontsize=12, loc='upper right')
     
@@ -133,7 +130,6 @@ def run_attention_probe(pipe, raw_feature_vector, save_path="attention_probe_res
     plt.savefig(save_path, dpi=300)
     print(f"[√] 注意力探针测试完成！直观结果图表已保存至: {os.path.abspath(save_path)}")
     print(f"    -> 物理条件实际注入率: {physics_mean:.2%}")
-    print(f"    -> 背景噪声吞噬率: {padding_mean:.2%}")
 
 
 
