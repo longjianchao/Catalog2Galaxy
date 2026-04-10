@@ -91,32 +91,44 @@ class CatalogTextEncoder(nn.Module):
         mlp_dtype = self.mlp[0].weight.dtype
         feature_vectors = feature_vectors.to(device=self.mlp[0].weight.device, dtype=torch.float32)
 
-        # 1. 物理归一化 (保留真实的物理尺度)
+        # ✅ 新增：在输入空间检测是否为全零（即推理时传来的无条件信号）
+        # 如果是全零输入，直接返回全零embedding，跳过归一化和MLP
+        is_uncond = (feature_vectors.abs().sum(dim=1) == 0)  # shape: [B]
+        
+        # 1. 物理归一化
         normed_vectors = self.normalize(feature_vectors)
         x = normed_vectors.to(dtype=mlp_dtype)
 
         # 2. 升维映射
         flat_out = self.mlp(x)
         
-        # 3. 动态序列重塑：[B, 22, 768]，没有多余的 61 个空位！
+        # 3. 动态序列重塑：[B, 22, 768]
         sequence_embeddings = flat_out.view(batch_size, self.num_tokens, self.output_dim)
         
         # 4. 注入位置信息
         feature_embeddings = sequence_embeddings + self.position_embedding.to(dtype=mlp_dtype)
 
-        # ── 🚀 终极特洛伊木马：绕过 eval() 限制，基于计算图状态触发 ──
+        # ✅ 新增：把无条件样本的embedding强制置零
+        # is_uncond: [B] → [B, 1, 1] 用于广播
+        if is_uncond.any():
+            uncond_mask = is_uncond.view(batch_size, 1, 1).to(dtype=mlp_dtype)
+            feature_embeddings = feature_embeddings * (1.0 - uncond_mask)
+
+        # ── 重建loss，逻辑不变 ──
         if torch.is_grad_enabled():
-            # 使用 flat_out 尝试还原最开始的归一化特征
-            recon_x = self.physics_decoder(flat_out)
-            # 还原目标是归一化后的数据，保证数值稳定，detach 防止梯度回传破坏归一化
-            target_normed = normed_vectors.to(dtype=mlp_dtype).detach()
-            # 计算 MSE Loss 并强行挂载到 self 上，等待 train_ac_single.py 拦截提取
-            self.recon_loss = torch.nn.functional.mse_loss(recon_x, target_normed)
+            # ✅ 只对有条件的样本计算recon loss，无条件样本不参与
+            if (~is_uncond).any():
+                valid_flat = flat_out[~is_uncond]
+                valid_normed = normed_vectors[~is_uncond].to(dtype=mlp_dtype).detach()
+                recon_x = self.physics_decoder(valid_flat)
+                self.recon_loss = torch.nn.functional.mse_loss(recon_x, valid_normed)
+            else:
+                self.recon_loss = None
         else:
             self.recon_loss = None
 
-        # ── 正常推理分支 ──
         pooled_output = feature_embeddings.mean(dim=1)
+        # ... 后面的DictTuple完全不变
 
         class DictTuple(tuple):
             def __getattr__(self, key):

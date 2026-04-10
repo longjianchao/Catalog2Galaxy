@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-GalaxySD - DAPS 物理引导推理脚本 (40k 开盖验丹版)
-特性：支持 GPU Batch 并行、复合归一化、微批次防 OOM、DAPS 退火解耦步进
+GalaxySD - DAPS 物理引导推理脚本 (验证集精简直读版)
+特性：支持 GPU Batch 并行、直接读取目标星表、保留梯度幅值、无损 fp32 解码
 """
 
 import os
 import csv
+import shutil
 import numpy as np
 import pandas as pd
 import torch
@@ -26,17 +27,17 @@ warnings.filterwarnings('ignore')
 # 🔧 [配置区] 
 # =====================================================================
 CFG_PATH = "cfgs/infer/text2img_galaxy_catalog.yaml"  
-CATALOG_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/labeled_catalog_cleaned_v3.csv"
-INDEX_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/validation_index.txt" 
+# 🚀 [修改 1] 直接指向截取好的小星表
+CATALOG_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/validation_catalog_100.csv"
 REAL_IMG_ROOT = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/filtered_data" 
-OUT_DIR = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/val_results_150k_dps" # 建议改名防混淆
+OUT_DIR = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/val_results_100_dps" # 建议每次测试换个名字
 STATS_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/normalization_stats_v3.csv"
 REGRESSOR_CKPT = "regressor_output_v3/best_regressor_v3.pth" 
 
 BATCH_SIZE = 16    
 SEED = 114514      
 LAMBDA_GUIDE = 10.0 
-SKIP_RATIO = 0.3    # 🚀 [修改 1] DAPS 全局生效，真正测试 40k 基座对推力的承受度
+SKIP_RATIO = 0.3    
 MICRO_BATCH = 4 
 # =====================================================================
 
@@ -64,7 +65,8 @@ class CustomVisualizer(Visualizer):
         return pipe
 
 class CatalogInferencerDPS:
-    def __init__(self, cfg_path, catalog_file, index_file, real_img_root, stats_file, regressor_ckpt):
+    # 🚀 [修改 2] 移除了 index_file 参数
+    def __init__(self, cfg_path, catalog_file, real_img_root, stats_file, regressor_ckpt):
         self.cfg = OmegaConf.load(cfg_path)
         self._fill_default_cfg()
         self.real_img_root = real_img_root
@@ -81,12 +83,17 @@ class CatalogInferencerDPS:
 
         self.stats_dict = self._load_normalization_stats(stats_file)
         
-        with open(index_file, 'r') as f:
-            self.target_indexs = [line.strip() for line in f.readlines() if line.strip()]
-        target_set = set(self.target_indexs)
-        print(f"[*] 从 txt 文件中读取到 {len(self.target_indexs)} 个目标 index...")
-
-        self.catalog_dict = self._load_catalog_by_indexs(catalog_file, target_set)
+        # 🚀 [修改 3] 直接读取目标 CSV 并构建字典
+        self.catalog_dict = {}
+        with open(catalog_file, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                idx = row.get('index', '')
+                if idx:
+                    self.catalog_dict[idx] = row
+        
+        self.target_indexs = list(self.catalog_dict.keys())
+        print(f"[*] 从目标星表文件中直接读取到 {len(self.target_indexs)} 个星系数据...")
         
         print("[*] 正在加载生成模型与 Pipeline...")
         self.visualizer = CustomVisualizer(self.cfg)
@@ -112,16 +119,6 @@ class CatalogInferencerDPS:
                 'method': row['method'], 'min': float(row['transform_min']), 'max': float(row['transform_max'])
             }
         return stats_dict
-
-    def _load_catalog_by_indexs(self, catalog_file, target_set):
-        catalog_dict = {}
-        with open(catalog_file, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                idx = row.get('index', '')
-                if idx in target_set:
-                    catalog_dict[idx] = row
-        return catalog_dict
 
     def _fill_default_cfg(self):
         defaults = {
@@ -214,8 +211,10 @@ class CatalogInferencerDPS:
     def batch_infer(self, output_dir, batch_size, seed):
         fake_dir = os.path.join(output_dir, "fake_only")
         compare_dir = os.path.join(output_dir, "compare")
+        raw_dir = os.path.join(output_dir, "raw_only")  # 🚀 新增 raw_only 目录
         os.makedirs(fake_dir, exist_ok=True)
         os.makedirs(compare_dir, exist_ok=True)
+        os.makedirs(raw_dir, exist_ok=True)  # 🚀 创建 raw_only 目录
 
         pipe = self.visualizer.pipe
         device = self.device
@@ -243,7 +242,21 @@ class CatalogInferencerDPS:
         do_classifier_free_guidance = guidance_scale > 1.0
         start_guide_step_idx = int(num_inference_steps * SKIP_RATIO)
 
-        valid_indexs = [idx for idx in self.target_indexs if idx in self.catalog_dict]
+        # 🚀 由于直接遍历字典，所有数据都是有效的
+        valid_indexs = self.target_indexs
+
+        # 🚀 复制真实图像到 raw_only 目录
+        # print(f"[*] 正在复制 {len(valid_indexs)} 张真实图像到 raw_only 目录...")
+        for idx_str in tqdm(valid_indexs, desc="Copying Real Images"):
+            try:
+                real_img_path = os.path.join(self.real_img_root, f"{idx_str}.jpg")
+                if os.path.exists(real_img_path):
+                    shutil.copy2(real_img_path, os.path.join(raw_dir, f"{idx_str}.jpg"))
+                else:
+                    print(f"  [!] 警告：真实图像不存在 {real_img_path}")
+            except Exception as e:
+                print(f"  [!] 复制 {idx_str} 失败：{e}")
+        # print(f"[√] 真实图像复制完成，保存至：{raw_dir}")
 
         print(f"\n[*] 🚀 开始 DAPS 物理约束高并发生成 (Batch={batch_size}, CFG={guidance_scale}, Base Lambda={LAMBDA_GUIDE})")
         generator = torch.Generator(device=device).manual_seed(seed)
@@ -260,10 +273,12 @@ class CatalogInferencerDPS:
 
             try:
                 with torch.no_grad():
-                    emb, _ = pipe.text_encoder(raw_feature_tensor) 
+                    emb, _ = pipe.text_encoder(raw_feature_tensor)
                     if do_classifier_free_guidance:
-                        null_feature_tensor = torch.zeros_like(raw_feature_tensor)
-                        negative_emb, _ = pipe.text_encoder(null_feature_tensor)
+                        # ✅ 修改：直接在embedding空间构造无条件信号
+                        # 与TextEncoder内部对全零输入的处理结果完全一致
+                        # 避免了全零原始特征经过log10归一化产生极端值的问题
+                        negative_emb = torch.zeros_like(emb)
                         emb = torch.cat([negative_emb, emb])
 
                 pipe.scheduler.set_timesteps(num_inference_steps, device=device)
@@ -295,18 +310,21 @@ class CatalogInferencerDPS:
                     if step_idx >= start_guide_step_idx:
                         with torch.enable_grad():
                             latents_g = latents.detach().requires_grad_(True)
+                            
+                            # 🚀 [修改 4 - 精确解耦修复]：保持在 FP32 进行计算，杜绝向 FP16 横跳带来的精度损耗！
                             x0_hat_latent = (latents_g - beta_prod_t ** 0.5 * noise_pred) / alpha_prod_t ** 0.5
-                            x0_hat_scaled = 1 / pipe.vae.config.scaling_factor * x0_hat_latent
-                            x0_hat_scaled = x0_hat_scaled.to(device, dtype=pipe_dtype)
+                            x0_hat_scaled = (1 / pipe.vae.config.scaling_factor * x0_hat_latent).to(torch.float32)
+                            # 删除了 x0_hat_scaled = x0_hat_scaled.to(device, dtype=pipe_dtype)
                             
                             total_loss = 0.0
                             grad_accumulator = torch.zeros_like(latents_g)
                             
                             for mb_start in range(0, current_bs, MICRO_BATCH):
                                 mb_end = min(mb_start + MICRO_BATCH, current_bs)
-                                is_last = (mb_end == current_bs) # 🚀 [修改 2] 动态释放计算图
+                                is_last = (mb_end == current_bs)
                                 
-                                mb_x0_scaled_fp32 = x0_hat_scaled[mb_start:mb_end].to(torch.float32)
+                                # 🚀 [修改 4 延续] mb_x0 已经是精确的 float32，直接切片传入解码器
+                                mb_x0_scaled_fp32 = x0_hat_scaled[mb_start:mb_end] 
                                 mb_target_fp32 = target_norm_tensor[mb_start:mb_end] 
                                 
                                 mb_pred_images = AutoencoderKL.decode(pipe.vae, mb_x0_scaled_fp32).sample
@@ -318,11 +336,9 @@ class CatalogInferencerDPS:
                                 mb_loss = F.mse_loss(mb_pred_catalog, mb_target_fp32, reduction='sum')
                                 total_loss += mb_loss.item()
                                 
-                                # 使用 retain_graph=not is_last 防泄漏
                                 mb_grad_full = torch.autograd.grad(mb_loss, latents_g, retain_graph=not is_last)[0]
                                 grad_accumulator += mb_grad_full
                             
-                            # 🚀 [修改 3] 严格数学对齐：除以总样本数与特征维度(22)，防止梯度暴增
                             grad = grad_accumulator / (current_bs * 22.0)
 
                     with torch.no_grad():
@@ -331,16 +347,17 @@ class CatalogInferencerDPS:
                         
                         if isinstance(grad, torch.Tensor):
                             grad_fp32 = grad.to(torch.float32)
-                            grad_norm = torch.norm(grad_fp32) + 1e-8
-                            grad_dir = grad_fp32 / grad_norm
+                            
+                            # RMS归一化，把梯度缩放到可用量级
+                            grad_rms = grad_fp32.pow(2).mean().sqrt() + 1e-8
+                            grad_normalized = grad_fp32 / grad_rms
+                            
                             latent_std = prev_latents.std().to(torch.float32)
+                            physics_push = daps_weight * grad_normalized * latent_std * 0.0001
                             
-                            physics_push = daps_weight * grad_dir * latent_std * 0.5
-                            
-                            # if step_idx % 10 == 0:
-                            #     print(f"    Step {step_idx:02d} | Physics Loss: {(total_loss / (current_bs * 22)):.4f} | Push: {torch.norm(physics_push).item():.4f}")
-                                
                             latents = prev_latents - physics_push.to(pipe_dtype)
+                            if step_idx % 10 == 0:
+                                print(f"    Step {step_idx:02d} | Physics Loss: {(total_loss / (current_bs * 22)):.4f} | Push: {torch.norm(physics_push).item():.4f}")
                         else:
                             latents = prev_latents
 
@@ -371,6 +388,7 @@ class CatalogInferencerDPS:
                 traceback.print_exc()
 
 if __name__ == "__main__":
-    inferencer = CatalogInferencerDPS(CFG_PATH, CATALOG_FILE, INDEX_FILE, REAL_IMG_ROOT, STATS_FILE, REGRESSOR_CKPT)
+    # 🚀 [修改 6] 移除传参处的 INDEX_FILE
+    inferencer = CatalogInferencerDPS(CFG_PATH, CATALOG_FILE, REAL_IMG_ROOT, STATS_FILE, REGRESSOR_CKPT)
     inferencer.batch_infer(OUT_DIR, batch_size=BATCH_SIZE, seed=SEED)
     print("\n[√] 物理注入推理任务圆满完成！")

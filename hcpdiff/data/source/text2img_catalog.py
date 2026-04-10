@@ -111,15 +111,12 @@ class Text2ImageCatalogSource(Text2ImageAttMapSource):
             f"特征维度不匹配：期望 {len(self.feature_columns)}，实际 {len(feature_vector)}"
         )
 
-        # ── 🔴 核心修改：10% 概率的 Condition Dropout ──
-        # 这一步极其关键！以 10% 的概率将输入特征全置为 0，让模型学习“无条件背景”。
-        # 没有这一步，推理时 CFG (guidance_scale > 1.0) 必定会引发特征崩溃。
+        # ✅ 修改：Condition Dropout 仍然在输入空间做全零
+        # 但现在TextEncoder的forward会识别全零输入并直接输出全零embedding
+        # 训练和推理的"无条件"定义因此完全一致
         if torch.rand(1).item() < 0.1:
             feature_vector = np.zeros_like(feature_vector)
-        # ───────────────────────────────────────
 
-        # 框架会把这个 tensor 当 token ids 处理并 padding 到77
-        # CatalogTextEncoder.forward() 里会截取前 feature_dim 个值
         feature_tensor = torch.tensor(feature_vector, dtype=torch.float32)
         return {'prompt_ids': feature_tensor}
 

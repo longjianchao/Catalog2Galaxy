@@ -12,7 +12,7 @@ clip_skip: 0
 infer_args:
   width: 192
   height: 192
-  guidance_scale:  1.0
+  guidance_scale:  7.5
   num_inference_steps: 50
 
 new_components:
@@ -36,14 +36,14 @@ merge:
     type: 'unet'
     base_model_alpha: 0
     part:
-      - path: 'exps/2026-04-08-17-17-36/ckpts/unet-100000.safetensors'
+      - path: 'exps/2026-04-09-21-05-58/ckpts/unet-100000.safetensors'
         alpha: ${....alpha}
         layers: 'all'
   group2:
     type: 'TE'
     base_model_alpha: 0
     part:
-      - path: 'exps/2026-04-08-17-17-36/ckpts/text_encoder-100000.safetensors'
+      - path: 'exps/2026-04-09-21-05-58/ckpts/text_encoder-100000.safetensors'
         alpha: ${....alpha}
         layers: 'all'
 
