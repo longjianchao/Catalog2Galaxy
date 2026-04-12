@@ -50,3 +50,5 @@ Thumbs.db
 
 cfgs/train/data/
 cfgs/train/models/pretrained_model/
+
+loss_plots/

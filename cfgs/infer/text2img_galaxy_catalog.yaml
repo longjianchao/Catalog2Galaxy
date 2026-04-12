@@ -39,6 +39,7 @@ merge:
       - path: 'exps/2026-04-09-21-05-58/ckpts/unet-100000.safetensors'
         alpha: ${....alpha}
         layers: 'all'
+  
   group2:
     type: 'TE'
     base_model_alpha: 0

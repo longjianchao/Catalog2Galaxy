@@ -4,26 +4,24 @@ _base_:
   - cfgs/train/tuning_base.yaml
 
 train:
-  # 🚀 建议再跑 30,000 ~ 50,000 步，专注于物理对齐
-  save_step: 5000
-  train_steps: 180000 # 在原有的 150k 基础上增加 30k
+  train_TE: True
+  save_step: 10000
+  train_steps: 130000  # 从100k接着跑30k步
   max_grad_norm: 1.0
   scale_lr: False
   
-  # 恢复训练配置
   resume:
     ckpt_path:
       unet: 
-        - "exps/2026-03-26-11-53-21/ckpts/unet-150000.safetensors"
+        - "exps/2026-04-09-21-05-58/ckpts/unet-100000.safetensors"
       TE: 
-        - "exps/2026-03-26-11-53-21/ckpts/text_encoder-150000.safetensors"
+        - "exps/2026-04-09-21-05-58/ckpts/text_encoder-100000.safetensors"
       words: {}
-    start_step: 150000
+    start_step: 100000
 
   scheduler:
     name: "one_cycle"
-    # 微调阶段不需要太长的预热，让模型快速进入战斗状态
-    num_warmup_steps: 1000 
+    num_warmup_steps: 1000
     num_training_steps: ${train.train_steps}
     scheduler_kwargs: {}
 
@@ -37,22 +35,49 @@ model:
     feature_dim: 22
     hidden_dim: 1024
     output_dim: 768
-    # 保持 V3 统计量路径
+    num_tokens: 22
     norm_stats_path: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/normalization_stats_v3.csv"
 
-# ── 🔴 核心修改区：非对称学习率注入 ──
-
 unet:
-  - lr: 1e-6  # 🚀 大幅压低 UNet LR，保护已经练好的星系生成能力，仅微调注意力权重
+  - lr: 1e-4
     layers:
-      - ""
+      - "down_blocks.0.attentions.0.transformer_blocks.0.attn2.to_k"
+      - "down_blocks.0.attentions.0.transformer_blocks.0.attn2.to_v"
+      - "down_blocks.0.attentions.1.transformer_blocks.0.attn2.to_k"
+      - "down_blocks.0.attentions.1.transformer_blocks.0.attn2.to_v"
+      - "down_blocks.1.attentions.0.transformer_blocks.0.attn2.to_k"
+      - "down_blocks.1.attentions.0.transformer_blocks.0.attn2.to_v"
+      - "down_blocks.1.attentions.1.transformer_blocks.0.attn2.to_k"
+      - "down_blocks.1.attentions.1.transformer_blocks.0.attn2.to_v"
+      - "down_blocks.2.attentions.0.transformer_blocks.0.attn2.to_k"
+      - "down_blocks.2.attentions.0.transformer_blocks.0.attn2.to_v"
+      - "down_blocks.2.attentions.1.transformer_blocks.0.attn2.to_k"
+      - "down_blocks.2.attentions.1.transformer_blocks.0.attn2.to_v"
+      - "up_blocks.1.attentions.0.transformer_blocks.0.attn2.to_k"
+      - "up_blocks.1.attentions.0.transformer_blocks.0.attn2.to_v"
+      - "up_blocks.1.attentions.1.transformer_blocks.0.attn2.to_k"
+      - "up_blocks.1.attentions.1.transformer_blocks.0.attn2.to_v"
+      - "up_blocks.1.attentions.2.transformer_blocks.0.attn2.to_k"
+      - "up_blocks.1.attentions.2.transformer_blocks.0.attn2.to_v"
+      - "up_blocks.2.attentions.0.transformer_blocks.0.attn2.to_k"
+      - "up_blocks.2.attentions.0.transformer_blocks.0.attn2.to_v"
+      - "up_blocks.2.attentions.1.transformer_blocks.0.attn2.to_k"
+      - "up_blocks.2.attentions.1.transformer_blocks.0.attn2.to_v"
+      - "up_blocks.2.attentions.2.transformer_blocks.0.attn2.to_k"
+      - "up_blocks.2.attentions.2.transformer_blocks.0.attn2.to_v"
+      - "up_blocks.3.attentions.0.transformer_blocks.0.attn2.to_k"
+      - "up_blocks.3.attentions.0.transformer_blocks.0.attn2.to_v"
+      - "up_blocks.3.attentions.1.transformer_blocks.0.attn2.to_k"
+      - "up_blocks.3.attentions.1.transformer_blocks.0.attn2.to_v"
+      - "up_blocks.3.attentions.2.transformer_blocks.0.attn2.to_k"
+      - "up_blocks.3.attentions.2.transformer_blocks.0.attn2.to_v"
+      - "mid_block.attentions.0.transformer_blocks.0.attn2.to_k"
+      - "mid_block.attentions.0.transformer_blocks.0.attn2.to_v"
 
 text_encoder:
-  - lr: 5e-5  # 🚀 提高 5 倍！强迫从零开始的 MLP 快速找到正确的物理投影坐标
+  - lr: 1e-4
     layers:
       - ""
-
-# ────────────────────────────────────
 
 data_cfg:
   batch_size: 16
@@ -63,9 +88,8 @@ data_cfg:
 data:
   dataset1:
     batch_size: ${data_cfg.batch_size}
-    # 💡 建议微调阶段关闭缓存，或者确保 cache 路径是全新的，防止旧的潜在语义污染
-    cache_latents: True 
-    cache_path: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/latent_cache_tuning/"
+    cache_latents: True
+    cache_path: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/latent_cache_v3/"
 
     source:
       data_source1:

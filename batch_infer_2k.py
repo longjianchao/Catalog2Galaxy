@@ -36,7 +36,7 @@ REGRESSOR_CKPT = "regressor_output_v3/best_regressor_v3.pth"
 
 BATCH_SIZE = 16    
 SEED = 114514      
-LAMBDA_GUIDE = 10.0 
+LAMBDA_GUIDE = 0.0 
 SKIP_RATIO = 0.3    
 MICRO_BATCH = 4 
 # =====================================================================

@@ -55,7 +55,7 @@ class TrainerSingleCard(Trainer):
             # lambda_recon 建议从 0.05 开始：
             # diffusion loss 通常在 0.1~0.2 量级，0.05 权重下 recon 贡献约 10~20%
             # 若进度条里 loss_recon 远大于 loss，适当调小；反之可适当调大
-            lambda_recon = 0.05
+            lambda_recon = 0.15
             self.current_loss_recon = recon_loss.item() * lambda_recon
             if isinstance(loss_dict, dict):
                 # hcpdiff 会自动 sum() 所有键的 loss 并反传，
