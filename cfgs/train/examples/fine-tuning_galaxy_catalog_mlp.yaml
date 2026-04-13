@@ -10,9 +10,19 @@ train:
   max_grad_norm: 1.0
   scale_lr: False
 
+  # resume：从80000步继续，不重置步数
+  resume:
+    start_step: 80000
+    ckpt_path:
+      unet:
+        - "exps/2026-04-12-22-46-03/ckpts/unet-80000.safetensors"
+      TE:
+        - "exps/2026-04-12-22-46-03/ckpts/text_encoder-80000.safetensors"
+      words: []
+
   scheduler:
-    name: "one_cycle"
-    num_warmup_steps: 5000
+    name: "constant_with_warmup"
+    num_warmup_steps: 500
     num_training_steps: ${train.train_steps}
     scheduler_kwargs: {}
 
@@ -23,49 +33,31 @@ model:
   ema_text_encoder: 1
   text_encoder:
     _target_: hcpdiff.models.textencoder_catalog.CatalogTextEncoder
-    feature_dim: 22   # 21维 + EBV = 22维
+    feature_dim: 22
     hidden_dim: 1024
     output_dim: 768
-    num_tokens: 22    # 🌟 显式声明，明确告诉框架我们斩断了 77 的限制，只用 22 个纯物理 Token
+    num_tokens: 22
     norm_stats_path: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/normalization_stats_v3.csv"
 
 unet:
+  # time_embedding：adagn_emb幅值突然×20，用3e-5缓冲适应期
+  # 其余层保持1e-5不变，让整体平稳继续
   - lr: 3e-5
     layers:
-      - "down_blocks.0.attentions.0.transformer_blocks.0.attn2.to_k"
-      - "down_blocks.0.attentions.0.transformer_blocks.0.attn2.to_v"
-      - "down_blocks.0.attentions.1.transformer_blocks.0.attn2.to_k"
-      - "down_blocks.0.attentions.1.transformer_blocks.0.attn2.to_v"
-      - "down_blocks.1.attentions.0.transformer_blocks.0.attn2.to_k"
-      - "down_blocks.1.attentions.0.transformer_blocks.0.attn2.to_v"
-      - "down_blocks.1.attentions.1.transformer_blocks.0.attn2.to_k"
-      - "down_blocks.1.attentions.1.transformer_blocks.0.attn2.to_v"
-      - "down_blocks.2.attentions.0.transformer_blocks.0.attn2.to_k"
-      - "down_blocks.2.attentions.0.transformer_blocks.0.attn2.to_v"
-      - "down_blocks.2.attentions.1.transformer_blocks.0.attn2.to_k"
-      - "down_blocks.2.attentions.1.transformer_blocks.0.attn2.to_v"
-      - "up_blocks.1.attentions.0.transformer_blocks.0.attn2.to_k"
-      - "up_blocks.1.attentions.0.transformer_blocks.0.attn2.to_v"
-      - "up_blocks.1.attentions.1.transformer_blocks.0.attn2.to_k"
-      - "up_blocks.1.attentions.1.transformer_blocks.0.attn2.to_v"
-      - "up_blocks.1.attentions.2.transformer_blocks.0.attn2.to_k"
-      - "up_blocks.1.attentions.2.transformer_blocks.0.attn2.to_v"
-      - "up_blocks.2.attentions.0.transformer_blocks.0.attn2.to_k"
-      - "up_blocks.2.attentions.0.transformer_blocks.0.attn2.to_v"
-      - "up_blocks.2.attentions.1.transformer_blocks.0.attn2.to_k"
-      - "up_blocks.2.attentions.1.transformer_blocks.0.attn2.to_v"
-      - "up_blocks.2.attentions.2.transformer_blocks.0.attn2.to_k"
-      - "up_blocks.2.attentions.2.transformer_blocks.0.attn2.to_v"
-      - "up_blocks.3.attentions.0.transformer_blocks.0.attn2.to_k"
-      - "up_blocks.3.attentions.0.transformer_blocks.0.attn2.to_v"
-      - "up_blocks.3.attentions.1.transformer_blocks.0.attn2.to_k"
-      - "up_blocks.3.attentions.1.transformer_blocks.0.attn2.to_v"
-      - "up_blocks.3.attentions.2.transformer_blocks.0.attn2.to_k"
-      - "up_blocks.3.attentions.2.transformer_blocks.0.attn2.to_v"
-      - "mid_block.attentions.0.transformer_blocks.0.attn2.to_k"
-      - "mid_block.attentions.0.transformer_blocks.0.attn2.to_v"
+      - "time_embedding"
+
+  - lr: 1e-5
+    layers:
+      - "conv_in"
+      - "down_blocks"
+      - "mid_block"
+      - "up_blocks"
+      - "conv_norm_out"
+      - "conv_out"
 
 text_encoder:
+  # adagn_projector输出×20后梯度也×20，用3e-5防止过度更新
+  # 其余TE参数跟随降档
   - lr: 3e-5
     layers:
       - ""
@@ -73,14 +65,14 @@ text_encoder:
 data_cfg:
   batch_size: 16
   img_root: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/filtered_data"
-  catalog_file: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/labeled_catalog_cleaned_v3.csv"  # 改为 v3
+  catalog_file: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/labeled_catalog_cleaned_v3.csv"
   target_area: 192*192
 
 data:
   dataset1:
     batch_size: ${data_cfg.batch_size}
     cache_latents: True
-    cache_path: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/latent_cache_v3/"  # 改为 v3，避免和旧 cache 混用
+    cache_path: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/latent_cache_v3/"
 
     source:
       data_source1:

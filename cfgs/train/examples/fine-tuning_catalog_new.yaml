@@ -77,7 +77,7 @@ unet:
 text_encoder:
   - lr: 1e-4
     layers:
-      - ""
+      - "adagn_projector"  # 只训练新加的这个模块
 
 data_cfg:
   batch_size: 16

@@ -7,7 +7,10 @@ import pandas as pd
 class CatalogTextEncoder(nn.Module):
     def __init__(self, feature_dim, hidden_dim, output_dim, norm_stats_path, num_tokens=22):
         """
-        初始化纯物理驱动的星表特征编码器 (去 Padding + 重建自监督架构)
+        初始化纯物理驱动的星表特征编码器
+        双通道条件注入架构：
+          - 通道A：cross-attention（原有MLP → [B, 22, 768] token序列）
+          - 通道B：AdaGN（新增projector → [B, 1280] 全局向量，注入UNet time_embedding）
 
         Args:
             feature_dim: 星表特征向量的维度（22维）
@@ -22,7 +25,7 @@ class CatalogTextEncoder(nn.Module):
         self.num_embeddings = 49408
         self.embedding_dim = output_dim
 
-        # ── 1. 保留核心：物理归一化参数加载 ─────────────────────────
+        # ── 1. 物理归一化参数加载 ──────────────────────────────────
         if norm_stats_path is None:
             raise ValueError("norm_stats_path 必须提供")
 
@@ -35,7 +38,7 @@ class CatalogTextEncoder(nn.Module):
         self.register_buffer('norm_mins', torch.tensor(norm_df['transform_min'].values, dtype=torch.float32))
         self.register_buffer('norm_maxs', torch.tensor(norm_df['transform_max'].values, dtype=torch.float32))
 
-        # ── 2. 基座 MLP ──────────────────────────────────────────
+        # ── 2. 通道A：cross-attention MLP（原有，保持不变）──────────
         self.mlp = nn.Sequential(
             nn.Linear(feature_dim, hidden_dim),
             nn.SiLU(),
@@ -44,28 +47,43 @@ class CatalogTextEncoder(nn.Module):
             nn.Linear(hidden_dim, num_tokens * output_dim)
         )
 
-        # ── 3. 物理位置编码 ──────────────────────────────────────
-        # 给每一个物理 Token 一个专属的身份标识
+        # ── 3. 物理位置编码（原有，保持不变）────────────────────────
         self.position_embedding = nn.Parameter(torch.randn(1, num_tokens, output_dim) * 0.02)
 
-        # ── 4. 🛡️ 植入防御机制：物理信息重建解码器 ─────────────────
-        # 信息瓶颈：强制高维 Token 包含足以还原原始 22 维参数的信息
+        # ── 4. 物理信息重建解码器（原有，保持不变）──────────────────
         self.physics_decoder = nn.Sequential(
             nn.Linear(num_tokens * output_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, feature_dim)
         )
 
+        # ── 5. 通道B：AdaGN projector（新增）────────────────────────
+        # 输出1280维，对齐SD1.5 UNet的time_embedding维度
+        # 最后一层初始化为零：训练初期不扰乱UNet已有的生成能力
+        # 随着训练推进，物理信号会逐渐从零开始增强
+        self.adagn_projector = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 1280)
+        )
+        nn.init.zeros_(self.adagn_projector[-1].weight)
+        nn.init.zeros_(self.adagn_projector[-1].bias)
+
+        # 用于在forward之外传递AdaGN向量给TEUnetWrapper
+        self.last_adagn_emb = None
+
     def normalize(self, x: torch.Tensor) -> torch.Tensor:
         """
-        [完全保留] 极其安全的非 In-place 归一化函数
+        极其安全的非 In-place 归一化函数
         """
         device = x.device
         norm_mins = self.norm_mins.to(device)
         norm_maxs = self.norm_maxs.to(device)
-        
+
         normalized_cols = []
-        for i, method in enumerate(self.norm_methods): # ✅ 修复了 self.self.norm_methods 的笔误
+        for i, method in enumerate(self.norm_methods):
             val = x[:, i].float()
             lo = norm_mins[i]
             hi = norm_maxs[i]
@@ -84,39 +102,40 @@ class CatalogTextEncoder(nn.Module):
     def forward(self, feature_vectors, attention_mask=None, position_ids=None, output_hidden_states=False):
         batch_size = feature_vectors.shape[0]
         expected_dim = self.mlp[0].in_features  # 22
-        
+
         if feature_vectors.shape[1] != expected_dim:
             feature_vectors = feature_vectors[:, :expected_dim]
 
         mlp_dtype = self.mlp[0].weight.dtype
         feature_vectors = feature_vectors.to(device=self.mlp[0].weight.device, dtype=torch.float32)
 
-        # ✅ 新增：在输入空间检测是否为全零（即推理时传来的无条件信号）
-        # 如果是全零输入，直接返回全零embedding，跳过归一化和MLP
-        is_uncond = (feature_vectors.abs().sum(dim=1) == 0)  # shape: [B]
-        
+        # 在输入空间检测是否为全零（无条件信号）
+        is_uncond = (feature_vectors.abs().sum(dim=1) == 0)  # [B]
+
         # 1. 物理归一化
         normed_vectors = self.normalize(feature_vectors)
         x = normed_vectors.to(dtype=mlp_dtype)
 
-        # 2. 升维映射
+        # ── 通道A：cross-attention路径（原有逻辑不变）────────────────
         flat_out = self.mlp(x)
-        
-        # 3. 动态序列重塑：[B, 22, 768]
         sequence_embeddings = flat_out.view(batch_size, self.num_tokens, self.output_dim)
-        
-        # 4. 注入位置信息
         feature_embeddings = sequence_embeddings + self.position_embedding.to(dtype=mlp_dtype)
 
-        # ✅ 新增：把无条件样本的embedding强制置零
-        # is_uncond: [B] → [B, 1, 1] 用于广播
-        if is_uncond.any():
-            uncond_mask = is_uncond.view(batch_size, 1, 1).to(dtype=mlp_dtype)
-            feature_embeddings = feature_embeddings * (1.0 - uncond_mask)
+        # ── 通道B：AdaGN路径（新增）──────────────────────────────────
+        adagn_emb = self.adagn_projector(x) * 20.0  # [B, 1280]
 
-        # ── 重建loss，逻辑不变 ──
+        # 无条件样本：两个通道都置零
+        if is_uncond.any():
+            uncond_mask_3d = is_uncond.view(batch_size, 1, 1).to(dtype=mlp_dtype)
+            uncond_mask_2d = is_uncond.view(batch_size, 1).to(dtype=mlp_dtype)
+            feature_embeddings = feature_embeddings * (1.0 - uncond_mask_3d)
+            adagn_emb = adagn_emb * (1.0 - uncond_mask_2d)
+
+        # 把AdaGN向量挂载到self上，供TEUnetWrapper在UNet forward前取用
+        self.last_adagn_emb = adagn_emb
+
+        # ── 重建loss（原有逻辑不变）──────────────────────────────────
         if torch.is_grad_enabled():
-            # ✅ 只对有条件的样本计算recon loss，无条件样本不参与
             if (~is_uncond).any():
                 valid_flat = flat_out[~is_uncond]
                 valid_normed = normed_vectors[~is_uncond].to(dtype=mlp_dtype).detach()
@@ -128,7 +147,6 @@ class CatalogTextEncoder(nn.Module):
             self.recon_loss = None
 
         pooled_output = feature_embeddings.mean(dim=1)
-        # ... 后面的DictTuple完全不变
 
         class DictTuple(tuple):
             def __getattr__(self, key):

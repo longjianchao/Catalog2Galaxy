@@ -36,7 +36,7 @@ merge:
     type: 'unet'
     base_model_alpha: 0
     part:
-      - path: 'exps/2026-04-09-21-05-58/ckpts/unet-100000.safetensors'
+      - path: 'exps/2026-04-13-15-27-44/ckpts/unet-100000.safetensors'
         alpha: ${....alpha}
         layers: 'all'
   
@@ -44,7 +44,7 @@ merge:
     type: 'TE'
     base_model_alpha: 0
     part:
-      - path: 'exps/2026-04-09-21-05-58/ckpts/text_encoder-100000.safetensors'
+      - path: 'exps/2026-04-13-15-27-44/ckpts/text_encoder-100000.safetensors'
         alpha: ${....alpha}
         layers: 'all'
 
