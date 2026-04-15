@@ -1,7 +1,7 @@
 #!/bin/bash
 # ... (前面的 export 保持不变) ...
 
-export CUDA_VISIBLE_DEVICES=0,2
+export CUDA_VISIBLE_DEVICES=1,2
 export HF_ENDPOINT=https://hf-mirror.com
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 

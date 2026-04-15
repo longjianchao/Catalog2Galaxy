@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
 GalaxySD 物理回归器 (Physics Regressor) 训练脚本
-特性：严格复刻 V3 版复合物理归一化 (log10, arcsinh, linear + MinMax to [0,1])
+特性：
+1. 严格复刻 V3 版复合物理归一化
+2. 动态标签修正：支持空间几何增强的同时，保护 E2 的物理一致性
+3. 修复 I/O 投毒问题与冗余推理导致的算力浪费
 """
 
 import os
+import random
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -15,7 +19,9 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
+import torchvision.transforms.functional as TF
 from sklearn.model_selection import train_test_split
+from scipy.stats import spearmanr
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -23,7 +29,7 @@ warnings.filterwarnings('ignore')
 # =====================================================================
 # 1. 🔧 超参数配置区
 # =====================================================================
-IMG_DIR = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/filtered_data"  # ⚠️ 请确认真图的存放路径
+IMG_DIR = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/filtered_data"
 CATALOG_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/labeled_catalog_cleaned_v3.csv"
 STATS_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/normalization_stats_v3.csv"
 OUTPUT_DIR = "regressor_output"
@@ -35,7 +41,7 @@ DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# 22维特征严格对齐
+# 22维特征严格对齐 (注意: index 7 是 DESIDR1_SHAPE_E2)
 FEATURE_COLUMNS = [
     'DESIDR1_FLUX_G', 'DESIDR1_FLUX_R', 'DESIDR1_FLUX_Z',
     'DESIDR1_FLUX_W1', 'DESIDR1_FLUX_W2',
@@ -56,16 +62,17 @@ FEATURE_COLUMNS = [
 # 2. 📊 数据集与 V3 复合归一化处理
 # =====================================================================
 class GalaxyRegressionDataset(Dataset):
-    def __init__(self, df, img_dir, stats_file, transform=None):
+    def __init__(self, df, img_dir, stats_file, transform=None, is_train=False):
         self.df = df.reset_index(drop=True)
         self.img_dir = img_dir
         self.transform = transform
+        self.is_train = is_train  # 标识是否为训练集，决定是否触发动态增强
         
         # 加载归一化统计参数
         self.stats_dict = self._load_normalization_stats(stats_file)
         
         # 预先处理并缓存所有目标的归一化特征
-        print("正在提取并执行 V3 复合归一化处理...")
+        print(f"正在提取并执行 V3 复合归一化处理 (is_train={is_train})...")
         norm_features = []
         for _, row in tqdm(self.df.iterrows(), total=len(self.df)):
             norm_vec = self.extract_normalized_features(row)
@@ -86,12 +93,10 @@ class GalaxyRegressionDataset(Dataset):
         return stats_dict
 
     def extract_normalized_features(self, row):
-        """🚀 1:1 像素级复刻你的 batch_infer 归一化逻辑"""
         feature_vector = []
         for col in FEATURE_COLUMNS:
             val_str = row.get(col, '')
             
-            # 解析原始数值
             if val_str in ('', 'NA_Value', '-99.0', 'NaN', 'nan', 'None'):
                 val = np.nan
             else:
@@ -100,12 +105,10 @@ class GalaxyRegressionDataset(Dataset):
                 except ValueError:
                     val = np.nan
 
-            # 缺失值填充 0.5
             if np.isnan(val) or np.isinf(val):
                 feature_vector.append(0.5)
                 continue
 
-            # 核心数学变换
             if col in self.stats_dict:
                 method = self.stats_dict[col]['method']
                 t_min = self.stats_dict[col]['min']
@@ -116,10 +119,9 @@ class GalaxyRegressionDataset(Dataset):
                     t_val = np.log10(val)
                 elif method == 'asinh_minmax':
                     t_val = np.arcsinh(val)
-                else: # linear_minmax
+                else: 
                     t_val = val
 
-                # Min-Max 缩放至 [0, 1]
                 norm_val = (t_val - t_min) / (t_max - t_min + 1e-8)
                 norm_val = np.clip(norm_val, 0.0, 1.0)
                 
@@ -133,20 +135,39 @@ class GalaxyRegressionDataset(Dataset):
         return len(self.df)
 
     def __getitem__(self, idx):
-        # 你的星系图命名逻辑
         img_name = str(self.df.loc[idx, 'index']) + ".jpg" 
         img_path = os.path.join(self.img_dir, img_name)
         
-        try:
-            image = Image.open(img_path).convert('RGB')
-        except:
-            image = Image.new('RGB', (192, 192), (0, 0, 0))
+        # 防投毒拦截
+        if not os.path.exists(img_path):
+            raise FileNotFoundError(f"数据集缺失错误: 未找到图像文件 {img_path}")
+            
+        image = Image.open(img_path).convert('RGB')
+        
+        # ⚠️ 必须 copy！防止在缓存上做 in-place 修改导致永久污染
+        target = self.norm_features[idx].copy()
 
+        # ==========================================================
+        # 🌟 方案二核心：动态数据增强与标签同步修正
+        # 物理数学：E2在水平和垂直翻转下均会反转符号。
+        # 归一化空间中，符号反转 E2 -> -E2 等价于 1.0 - target_E2
+        # ==========================================================
+        if self.is_train:
+            # 随机水平翻转
+            if random.random() > 0.5:
+                image = TF.hflip(image)
+                target[7] = 1.0 - target[7]  # 修正 E2
+                
+            # 随机垂直翻转
+            if random.random() > 0.5:
+                image = TF.vflip(image)
+                target[7] = 1.0 - target[7]  # 修正 E2
+        
+        # 执行统一的非几何变换 (Resize, ToTensor)
         if self.transform:
             image = self.transform(image)
             
-        target = torch.tensor(self.norm_features[idx], dtype=torch.float32)
-        return image, target
+        return image, torch.tensor(target, dtype=torch.float32)
 
 # =====================================================================
 # 3. 🧠 物理教练网络架构 (ResNet-18)
@@ -155,9 +176,8 @@ class GalaxyRegressor(nn.Module):
     def __init__(self, num_classes=22):
         super().__init__()
         self.backbone = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-        # 替换全连接层输出 22 维
         self.backbone.fc = nn.Linear(self.backbone.fc.in_features, num_classes)
-        # 💡 妙招：因为我们的 Target 被严格限制在 [0, 1]，加上 Sigmoid 让模型更平滑且防止越界
+        # 加 Sigmoid 约束输出域至 [0, 1]
         self.output_act = nn.Sigmoid()
 
     def forward(self, x):
@@ -167,17 +187,12 @@ class GalaxyRegressor(nn.Module):
 # 4. 🏃‍♂️ 训练主函数
 # =====================================================================
 def main():
-    print("🚀 启动 GalaxySD 物理教练 (V3 归一化) 训练管线...")
+    print("🚀 启动 GalaxySD 物理教练 (V3 归一化 + 动态标签修正版) 训练管线...")
     
-    transform_train = transforms.Compose([
+    # 这里的 transform 仅保留尺寸调整与张量转换，几何增强已移至 Dataset 内部
+    transform_base = transforms.Compose([
         transforms.Resize((192, 192)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
         transforms.ToTensor(), 
-    ])
-    transform_val = transforms.Compose([
-        transforms.Resize((192, 192)),
-        transforms.ToTensor(),
     ])
 
     print("[*] 读取星表数据...")
@@ -185,9 +200,10 @@ def main():
     df_train, df_val = train_test_split(df_full, test_size=0.1, random_state=42)
     
     print("[*] 构建训练集...")
-    train_dataset = GalaxyRegressionDataset(df_train, IMG_DIR, STATS_FILE, transform=transform_train)
+    # 开启 is_train=True 触发动态翻转和标签修正
+    train_dataset = GalaxyRegressionDataset(df_train, IMG_DIR, STATS_FILE, transform=transform_base, is_train=True)
     print("[*] 构建验证集...")
-    val_dataset = GalaxyRegressionDataset(df_val, IMG_DIR, STATS_FILE, transform=transform_val)
+    val_dataset = GalaxyRegressionDataset(df_val, IMG_DIR, STATS_FILE, transform=transform_base, is_train=False)
     
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8, pin_memory=True)
@@ -197,7 +213,35 @@ def main():
     optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
+    def calculate_val_spearman(model, val_loader):
+        """计算验证集每维参数的 Spearman 相关性"""
+        model.eval()
+        all_preds = []
+        all_targets = []
+        
+        with torch.no_grad():
+            for images, targets in val_loader:
+                images = images.to(DEVICE)
+                outputs = model(images)
+                all_preds.append(outputs.cpu().numpy())
+                all_targets.append(targets.numpy())
+        
+        all_preds = np.concatenate(all_preds, axis=0)
+        all_targets = np.concatenate(all_targets, axis=0)
+        
+        spearman_corrs = []
+        for i in range(all_preds.shape[1]):
+            valid_mask = (all_targets[:, i] != 0.5)
+            if np.sum(valid_mask) > 10:
+                corr, _ = spearmanr(all_preds[valid_mask, i], all_targets[valid_mask, i])
+                spearman_corrs.append(corr)
+            else:
+                spearman_corrs.append(np.nan)
+        
+        return spearman_corrs, np.nanmean(spearman_corrs)
+    
     best_val_loss = float('inf')
+    best_val_spearman = -1.0
 
     print(f"\n[*] 开始训练，共计 {EPOCHS} 轮...")
     for epoch in range(EPOCHS):
@@ -231,13 +275,32 @@ def main():
                 pbar_val.set_postfix({'Loss': f"{loss.item():.4f}"})
                 
         val_loss /= len(val_dataset)
-        print(f"👉 Epoch {epoch+1:02d} | Train MSE: {train_loss:.5f} | Val MSE: {val_loss:.5f} | LR: {scheduler.get_last_lr()[0]:.2e}")
+        
+        # 消除冗余推理：每轮仅做一次 Spearman 计算并复用
+        current_spearman_corrs, current_mean_spearman = calculate_val_spearman(model, val_loader)
+        
+        if (epoch + 1) % 5 == 0 or epoch == 0:
+            print(f"\n📊 Epoch {epoch+1} Spearman 诊断:")
+            for i, col in enumerate(FEATURE_COLUMNS):
+                corr = current_spearman_corrs[i]
+                if np.isnan(corr):
+                    status = "N/A"
+                elif corr > 0.8:
+                    status = f"ρ={corr:+.4f} ✅"
+                elif corr > 0.6:
+                    status = f"ρ={corr:+.4f} ⚠️"
+                else:
+                    status = f"ρ={corr:+.4f} ❌"
+                print(f"  {col:35s} → {status}")
+            print(f"  平均 Spearman: {current_mean_spearman:.4f}\n")
+        
+        print(f"👉 Epoch {epoch+1:02d} | Train MSE: {train_loss:.5f} | Val MSE: {val_loss:.5f} | Val Spearman: {current_mean_spearman:.4f} | LR: {scheduler.get_last_lr()[0]:.2e}")
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            save_path = os.path.join(OUTPUT_DIR, "best_regressor_v3.pth")
+        if current_mean_spearman > best_val_spearman:
+            best_val_spearman = current_mean_spearman
+            save_path = os.path.join(OUTPUT_DIR, "best_regressor_v4.pth")
             torch.save(model.state_dict(), save_path)
-            print(f"⭐ 验证集 Loss 创下新低，模型已保存至 {save_path}")
+            print(f"⭐ 验证集 Spearman 创新高 ({current_mean_spearman:.4f})，模型已保存至 {save_path}")
 
 if __name__ == "__main__":
     main()

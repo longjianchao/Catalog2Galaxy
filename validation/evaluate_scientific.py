@@ -14,10 +14,10 @@ warnings.filterwarnings('ignore')
 # =====================================================================
 # 🔧 [配置区]
 # =====================================================================
-IMG_DIR = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/val_results_100_dps/fake_only"
-CAT_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/validation_catalog_2500.csv"
+IMG_DIR = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/val_results_100_dps/raw_only"
+CAT_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/validation/validation_catalog_100.csv"
 STATS_FILE = "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/normalization_stats_v3.csv"
-REGRESSOR_CKPT = "regressor_output/best_regressor_v3.pth" # 确保路径与你存放的物理裁判一致
+REGRESSOR_CKPT = "regressor_output/best_regressor_v4.pth" # 确保路径与你存放的物理裁判一致
 
 FEATURE_COLUMNS = [
     'DESIDR1_FLUX_G', 'DESIDR1_FLUX_R', 'DESIDR1_FLUX_Z', 'DESIDR1_FLUX_W1', 'DESIDR1_FLUX_W2',

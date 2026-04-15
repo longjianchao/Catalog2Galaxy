@@ -31,6 +31,11 @@ model:
   tokenizer_repeats: 1
   ema_unet: 1
   ema_text_encoder: 1
+
+  use_morphology_prior: True
+  geom_param_indices: [5, 6, 7, 8] # 这里非常重要！必须填 R, E1, E2, Sersic 在你 22维参数里的准确 Index
+  latent_size: 24
+
   text_encoder:
     _target_: hcpdiff.models.textencoder_catalog.CatalogTextEncoder
     feature_dim: 22
@@ -40,15 +45,13 @@ model:
     norm_stats_path: "/nfsdata/share/ljc/DESI_data/data_catalog_weighted-mass_emline-z-by_readeID/normalization_stats_v3.csv"
 
 unet:
-  # time_embedding：adagn_emb幅值突然×20，用3e-5缓冲适应期
-  # 其余层保持1e-5不变，让整体平稳继续
-  - lr: 3e-5
+  - lr: 1e-4
+    layers:
+      - "conv_in"      # 新加的第5通道权重需要快速学习
+
+  - lr: 1e-6           # 其余层极低学习率，保护现有收敛
     layers:
       - "time_embedding"
-
-  - lr: 1e-5
-    layers:
-      - "conv_in"
       - "down_blocks"
       - "mid_block"
       - "up_blocks"
@@ -58,7 +61,7 @@ unet:
 text_encoder:
   # adagn_projector输出×20后梯度也×20，用3e-5防止过度更新
   # 其余TE参数跟随降档
-  - lr: 3e-5
+  - lr: 1e-6
     layers:
       - ""
 

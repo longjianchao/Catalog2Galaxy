@@ -122,7 +122,7 @@ class CatalogTextEncoder(nn.Module):
         feature_embeddings = sequence_embeddings + self.position_embedding.to(dtype=mlp_dtype)
 
         # ── 通道B：AdaGN路径（新增）──────────────────────────────────
-        adagn_emb = self.adagn_projector(x) * 20.0  # [B, 1280]
+        adagn_emb = self.adagn_projector(x) * 2.0  # [B, 1280]
 
         # 无条件样本：两个通道都置零
         if is_uncond.any():
